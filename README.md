@@ -4,8 +4,10 @@ The NEXORA backend uses FastAPI, environment-based configuration, an HTTP
 health endpoint, a real-time WebSocket system, and PostgreSQL persistence
 managed through SQLAlchemy and Alembic.
 
-MQTT, device firmware, mobile app, voice assistant, AI, biometrics, cameras,
-automation execution, and security features are not implemented in this phase.
+The backend includes an optional Mosquitto-compatible MQTT integration for
+device commands, state, sensor readings, and availability. The web dashboard
+and Android-first Expo app use the existing API and provide a local-only
+simulated-device mode. Physical ESP32 hardware is not included or tested.
 
 ## Project layout
 
@@ -14,10 +16,15 @@ app/
 ├── __init__.py
 ├── api/
 │   ├── __init__.py
-│   └── routes/
-│       ├── __init__.py
-│       ├── events.py              # POST /events/test
-│       └── health.py              # GET /health
+│   ├── routes/
+│   │   ├── __init__.py
+│   │   ├── device_commands.py     # POST /devices/{device_id}/command
+│   │   ├── devices.py             # Device CRUD
+│   │   ├── events.py              # POST /events/test
+│   │   └── health.py              # GET /health
+│   └── schemas/
+│       ├── devices.py             # Device request and response schemas
+│       └── mqtt.py                # MQTT command schemas
 ├── core/
 │   ├── __init__.py
 │   ├── config.py                 # Environment-based settings
@@ -28,11 +35,18 @@ app/
 │   ├── dependencies.py            # Request-scoped session dependency
 │   ├── models.py                  # Initial persistent data models
 │   └── session.py                 # Reusable engine and sessions
+├── services/
+│   └── mqtt.py                    # MQTT broker lifecycle and device messages
 ├── websocket/
 │   ├── __init__.py
 │   ├── connection_manager.py
 │   └── events.py                  # Structured WebSocket events
 └── main.py                       # FastAPI app and /ws endpoint
+apps/
+├── web/                           # React + Vite dashboard
+└── mobile/                        # React Native + Expo app
+packages/
+└── shared/                        # API contracts, simulator, theme tokens
 alembic/
 ├── env.py
 ├── script.py.mako
@@ -40,12 +54,15 @@ alembic/
 tests/
 ├── test_config.py
 ├── test_database.py
+├── test_devices.py
 ├── test_health.py
+├── test_mqtt.py
 └── test_websocket.py
 alembic.ini
 .env.example
 .gitignore
 requirements.txt
+package.json
 ```
 
 ## Requirements
@@ -101,8 +118,103 @@ python -m pip install -r requirements.txt
 ```
 
 The `.env` file is ignored by Git. Values use the `NEXORA_` prefix, for example
-`NEXORA_LOG_LEVEL=DEBUG`. Do not put passwords, keys, or other secrets in source
-code.
+`NEXORA_LOG_LEVEL=DEBUG`; `DATABASE_URL` is read directly without that prefix.
+Do not put passwords, keys, or other secrets in source code.
+
+## Web dashboard and Android app
+
+The client projects are npm workspaces. From the repository root, install
+their dependencies:
+
+```powershell
+npm.cmd install
+```
+
+Start FastAPI in a separate terminal. Vite proxies the existing API paths and
+`/ws` to `http://127.0.0.1:8000` during local development, so no backend CORS
+or route changes are required.
+
+Start the web dashboard:
+
+```powershell
+npm.cmd run dev:web
+```
+
+Open the local URL printed by Vite (normally <http://localhost:5173>). For a
+remote backend, copy [apps/web/.env.example](./apps/web/.env.example) to
+`apps/web/.env.local` and set `VITE_API_URL` to its origin; use HTTPS for
+deployed services.
+
+Start the Expo app on an Android emulator with Android Studio installed:
+
+```powershell
+npm.cmd run dev:android
+```
+
+The default Android emulator API URL is `http://10.0.2.2:8000`, which points
+back to the development computer. For Expo Go on a physical Android phone,
+copy [apps/mobile/.env.example](./apps/mobile/.env.example) to
+`apps/mobile/.env.local`, replace the URL with the computer's LAN IP
+(for example `http://192.168.1.20:8000`), and run the Expo start script using
+LAN mode. The computer and phone must be on the same network, the firewall
+must allow the API port, and FastAPI must bind to the LAN interface
+(`--host 0.0.0.0`). Use a trusted HTTPS endpoint outside local development.
+
+Both apps show simulated lights, a fan, and climate readings by default.
+Simulation is in-memory only; simulated device identifiers are not sent to
+the API and simulated actions do not write to Neon. Real devices load through
+the existing Device endpoints. Live MQTT-backed sensor, state, and
+availability updates arrive over the existing `/ws` endpoint when MQTT has
+been explicitly configured and enabled. The apps do not enable MQTT.
+
+Activity and security history, automation execution, push delivery, and AI or
+voice recognition are shown as clear UI previews because the backend does not
+currently expose the required APIs/services. NORA's light-control example
+acts only on local simulated devices.
+
+Run client checks:
+
+```powershell
+npm.cmd run test:web
+npm.cmd run build:web
+npm.cmd run typecheck:mobile
+```
+
+## MQTT device integration
+
+The MQTT client uses Paho and is disabled by default. Install and run a
+Mosquitto broker, then configure the broker connection in the local `.env`:
+
+```dotenv
+NEXORA_MQTT_ENABLED=true
+NEXORA_MQTT_HOST=localhost
+NEXORA_MQTT_PORT=1883
+NEXORA_MQTT_USERNAME=
+NEXORA_MQTT_PASSWORD=
+NEXORA_MQTT_TLS_ENABLED=false
+NEXORA_MQTT_CLIENT_ID=nexora-backend
+NEXORA_MQTT_KEEPALIVE=60
+```
+
+For a secured broker, set its configured username and password and enable TLS
+as required by the broker. Keep credentials only in `.env`; do not commit
+them. The client reconnects after broker interruptions and resubscribes after
+each successful connection.
+
+The backend subscribes to these device topics:
+
+| Topic | Payload | Backend action |
+| --- | --- | --- |
+| `nexora/devices/{device_id}/state` | `{"status":"active"}` | Update the device status |
+| `nexora/devices/{device_id}/sensor` | `{"name":"Temperature","sensor_type":"temperature","reading":21.5,"unit":"C"}` | Store a sensor reading |
+| `nexora/devices/{device_id}/availability` | `online` or `offline` | Update device availability |
+
+Valid inbound messages are broadcast to connected WebSocket clients as
+structured device events. Commands are published at
+`nexora/devices/{device_id}/command` using `POST /devices/{device_id}/command`;
+the JSON body contains a `command` string and optional `parameters` object.
+Use `/docs` for the request and response schema. No database migration is
+needed for this integration.
 
 ## Install and create the PostgreSQL database
 
@@ -147,6 +259,22 @@ postgresql+psycopg://nexora_user:YOUR_PASSWORD@localhost:5432/nexora
 If the password contains URL-reserved characters, percent-encode them in the
 URL. The `.env` file is ignored by Git; do not put credentials in source files
 or commit them.
+
+### Using Neon
+
+Copy the connection string from the Neon dashboard into the local `.env` as
+`DATABASE_URL`. This project uses Psycopg 3, so use the
+`postgresql+psycopg://` SQLAlchemy URL scheme and retain `sslmode=require` to
+require TLS. Do not put credentials in `alembic.ini`.
+
+Before running migrations, test the connection without changing the schema:
+
+```powershell
+python -c "from app.db.session import check_database_connection; print(check_database_connection())"
+```
+
+Proceed only when the result is `connected`. If it reports `unavailable`, check
+the connection string, network access, and Neon project status first.
 
 ## Run database migrations
 

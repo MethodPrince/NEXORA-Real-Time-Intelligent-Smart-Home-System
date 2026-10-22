@@ -32,7 +32,7 @@ class ConnectionManager:
             logger.warning("Unable to send to disconnected WebSocket client")
             await self.disconnect(websocket)
 
-    async def broadcast(self, event: dict[str, str]) -> None:
+    async def broadcast(self, event: dict[str, object]) -> None:
         async with self._lock:
             connections = tuple(self.active_connections)
 
@@ -43,7 +43,7 @@ class ConnectionManager:
     async def _send_event(
         self,
         websocket: WebSocket,
-        event: dict[str, str],
+        event: dict[str, object],
     ) -> None:
         try:
             await websocket.send_json(event)

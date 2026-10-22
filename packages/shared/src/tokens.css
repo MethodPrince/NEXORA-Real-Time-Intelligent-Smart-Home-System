@@ -1,0 +1,18 @@
+:root {
+  --nexora-ink: #111827;
+  --nexora-muted-ink: #667085;
+  --nexora-paper: #f3f7fa;
+  --nexora-surface: #ffffff;
+  --nexora-surface-soft: #eaf1f6;
+  --nexora-border: #d8e2ea;
+  --nexora-charcoal: #101821;
+  --nexora-charcoal-soft: #182431;
+  --nexora-cyan: #00c8e8;
+  --nexora-blue: #3987ff;
+  --nexora-spacing-xs: 4px;
+  --nexora-spacing-sm: 8px;
+  --nexora-spacing-md: 12px;
+  --nexora-spacing-lg: 16px;
+  --nexora-spacing-xl: 24px;
+  --nexora-radius-card: 18px;
+}

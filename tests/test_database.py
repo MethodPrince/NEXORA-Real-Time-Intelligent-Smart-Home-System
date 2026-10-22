@@ -41,9 +41,9 @@ def test_initial_migration_creates_and_downgrades_all_tables(tmp_path) -> None:
     project_root = Path(__file__).resolve().parents[1]
     config = Config(str(project_root / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
-
-    command.upgrade(config, "head")
     engine = create_engine(database_url)
+    assert engine.dialect.name == "sqlite"
+
     expected_tables = {
         "users",
         "devices",
@@ -53,10 +53,14 @@ def test_initial_migration_creates_and_downgrades_all_tables(tmp_path) -> None:
         "security_events",
         "alembic_version",
     }
-    assert expected_tables <= set(inspect(engine).get_table_names())
 
     try:
-        command.downgrade(config, "base")
-        assert "users" not in inspect(engine).get_table_names()
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            assert expected_tables <= set(inspect(connection).get_table_names())
+
+            command.downgrade(config, "base")
+            assert "users" not in inspect(connection).get_table_names()
     finally:
         engine.dispose()

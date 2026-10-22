@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "NEXORA",
+    "slug": "nexora-smart-home",
+    "scheme": "nexora",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.nexora.smarthome",
+      "edgeToEdgeEnabled": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.nexora.smarthome",
+      "supportsTablet": true
+    }
+  }
+}
