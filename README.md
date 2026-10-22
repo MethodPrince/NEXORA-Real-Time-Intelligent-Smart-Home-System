@@ -44,13 +44,12 @@ requirements.txt
 Check Python from Windows Terminal:
 
 ```powershell
-py --version
+python --version
 ```
 
-If `py` is not recognized, install Python from <https://www.python.org/downloads/windows/>.
-During setup, select **Add python.exe to PATH**, then reopen Windows Terminal.
-The `python` command can be used instead of `py` in the commands below if that
-is how Python is installed on your computer.
+If `python` is not recognized, install Python from
+<https://www.python.org/downloads/windows/>. During setup, select **Add
+python.exe to PATH**, then reopen Windows Terminal.
 
 ## Create and activate a virtual environment
 
@@ -58,7 +57,7 @@ Run these commands from the NEXORA project folder:
 
 ```powershell
 cd "$HOME\OneDrive\Documents\NEXORA"
-py -3 -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -74,7 +73,7 @@ Alternatively, in Command Prompt:
 
 ```bat
 cd /d "%USERPROFILE%\OneDrive\Documents\NEXORA"
-py -3 -m venv .venv
+python -m venv .venv
 .venv\Scripts\activate.bat
 ```
 
@@ -150,7 +149,7 @@ Both the health endpoint and WebSocket message exchange should pass.
 
 ## Troubleshooting
 
-- **`py` or `python` is not recognized:** Install Python for Windows, select
+- **`python` is not recognized:** Install Python for Windows, select
   **Add python.exe to PATH**, and reopen the terminal.
 - **Activation is disabled:** Use the process-scoped execution policy command
   above, or activate from Command Prompt with `activate.bat`.
