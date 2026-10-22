@@ -1,13 +1,11 @@
-# NEXORA — Phase 1: Real-Time Python Foundation
+# NEXORA — Python Backend
 
-Phase 1 establishes the Python backend used as the central service layer in the
-NEXORA architecture. It includes a FastAPI application, environment-based
-configuration, basic logging, an HTTP health endpoint, and an asynchronous
-WebSocket endpoint.
+The NEXORA backend uses FastAPI, environment-based configuration, an HTTP
+health endpoint, a real-time WebSocket system, and PostgreSQL persistence
+managed through SQLAlchemy and Alembic.
 
-This phase intentionally does **not** add a database, MQTT, device firmware,
-mobile app, voice assistant, AI, biometrics, cameras, automation, or security
-features.
+MQTT, device firmware, mobile app, voice assistant, AI, biometrics, cameras,
+automation execution, and security features are not implemented in this phase.
 
 ## Project layout
 
@@ -18,18 +16,33 @@ app/
 │   ├── __init__.py
 │   └── routes/
 │       ├── __init__.py
+│       ├── events.py              # POST /events/test
 │       └── health.py              # GET /health
 ├── core/
 │   ├── __init__.py
 │   ├── config.py                 # Environment-based settings
 │   └── logging.py                # Logging configuration
+├── db/
+│   ├── __init__.py
+│   ├── base.py                    # SQLAlchemy declarative base
+│   ├── dependencies.py            # Request-scoped session dependency
+│   ├── models.py                  # Initial persistent data models
+│   └── session.py                 # Reusable engine and sessions
 ├── websocket/
 │   ├── __init__.py
-│   └── connection_manager.py
+│   ├── connection_manager.py
+│   └── events.py                  # Structured WebSocket events
 └── main.py                       # FastAPI app and /ws endpoint
+alembic/
+├── env.py
+├── script.py.mako
+└── versions/                      # Database schema migrations
 tests/
+├── test_config.py
+├── test_database.py
 ├── test_health.py
 └── test_websocket.py
+alembic.ini
 .env.example
 .gitignore
 requirements.txt
@@ -91,6 +104,80 @@ The `.env` file is ignored by Git. Values use the `NEXORA_` prefix, for example
 `NEXORA_LOG_LEVEL=DEBUG`. Do not put passwords, keys, or other secrets in source
 code.
 
+## Install and create the PostgreSQL database
+
+Install PostgreSQL for Windows from the official PostgreSQL download page:
+<https://www.postgresql.org/download/windows/>. The Windows installer includes
+the PostgreSQL server and command-line tools. Keep the port at `5432` unless
+you have a reason to change it, and remember the password you set for the
+initial `postgres` administrator account.
+
+Open a new PowerShell terminal after installation. If `psql` is not on `PATH`,
+run it from the PostgreSQL `bin` directory (commonly
+`C:\Program Files\PostgreSQL\<version>\bin`):
+
+```powershell
+psql -U postgres -h localhost
+```
+
+At the `postgres=#` prompt, create the application login, set its password
+using psql's hidden password prompt, and create the database:
+
+```sql
+CREATE ROLE nexora_user WITH LOGIN;
+\password nexora_user
+CREATE DATABASE nexora OWNER nexora_user;
+\q
+```
+
+In the project folder, copy the safe sample configuration and edit `.env`:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+Replace the `DATABASE_URL` placeholder password with the password created
+above. The URL format is:
+
+```text
+postgresql+psycopg://nexora_user:YOUR_PASSWORD@localhost:5432/nexora
+```
+
+If the password contains URL-reserved characters, percent-encode them in the
+URL. The `.env` file is ignored by Git; do not put credentials in source files
+or commit them.
+
+## Run database migrations
+
+Alembic records the current migration revision in the `alembic_version` table.
+Migration scripts define schema changes, so upgrades and rollbacks are
+repeatable and tracked rather than manually recreating tables.
+
+From the activated project virtual environment, apply the initial schema:
+
+```powershell
+python -m alembic upgrade head
+```
+
+After changing SQLAlchemy models, generate a migration, inspect the generated
+file in `alembic\versions`, then apply it:
+
+```powershell
+python -m alembic revision --autogenerate -m "describe schema change"
+python -m alembic upgrade head
+```
+
+Roll back one revision with:
+
+```powershell
+python -m alembic downgrade -1
+```
+
+`python -m alembic downgrade base` rolls back all migrations and drops the
+tables created by the initial migration. Use that only when you intend to
+remove the schema/data.
+
 ## Start FastAPI
 
 From the project folder with the virtual environment active:
@@ -102,6 +189,22 @@ python -m uvicorn app.main:app --reload
 The API is available at <http://127.0.0.1:8000>. Interactive API documentation
 is at <http://127.0.0.1:8000/docs>.
 
+## Verify the PostgreSQL connection
+
+After setting `DATABASE_URL` and applying migrations, check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+```
+
+The JSON response includes `"database": "connected"` when PostgreSQL answers a
+`SELECT 1` probe. If no database URL is set, it reports
+`"database": "not_configured"`; if the configured database cannot be reached,
+it reports `"database": "unavailable"` and `"status": "degraded"`. The response
+never includes the connection URL or credentials. The endpoint continues to
+return HTTP 200 so database trouble does not hide the availability of the
+FastAPI service.
+
 ## Test the health endpoint
 
 In a second Windows Terminal tab:
@@ -110,14 +213,18 @@ In a second Windows Terminal tab:
 Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-The response should be:
+With `DATABASE_URL` set and PostgreSQL reachable, the response should be:
 
 ```json
 {
   "status": "ok",
-  "service": "NEXORA"
+  "service": "NEXORA",
+  "database": "connected"
 }
 ```
+
+Without a configured database, the response still reports a healthy API with
+`"database": "not_configured"` instead.
 
 ## Test the WebSocket endpoint
 
@@ -137,6 +244,47 @@ NEXORA received: hello
 The `websockets` client is installed by `uvicorn[standard]`. The automated
 WebSocket test also checks multiple messages on the same connection.
 
+## Test real-time broadcasts
+
+The development endpoint `POST /events/test` broadcasts a structured JSON
+system event to every client connected to `/ws`. Keep the backend running and
+open two separate PowerShell terminals in the project folder. Activate the
+virtual environment in both:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+In the first terminal, connect a client that exits after receiving one event:
+
+```powershell
+python -c "from websockets.sync.client import connect; ws=connect('ws://127.0.0.1:8000/ws', legacy=True); print('Connected; waiting for broadcast...'); print(ws.recv()); ws.close()"
+```
+
+In the second terminal, connect a client that stays open for multiple events:
+
+```powershell
+python -c "from websockets.sync.client import connect; ws=connect('ws://127.0.0.1:8000/ws', legacy=True); print('Connected; waiting for broadcasts...'); exec('while True: print(ws.recv())')"
+```
+
+With both clients waiting, use a third terminal to trigger a broadcast:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/events/test
+```
+
+Both WebSocket terminals should print the same event, containing `type`,
+`source`, `message`, and a UTC `timestamp`. The first client then closes. Run
+the broadcast command again; the second, still-connected client should receive
+another event without affecting the backend.
+
+Run the automated tests, including the two-client broadcast/disconnect test,
+with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v
+```
+
 ## Run tests
 
 In a separate terminal with the project virtual environment activated:
@@ -145,7 +293,10 @@ In a separate terminal with the project virtual environment activated:
 python -m pytest -v
 ```
 
-Both the health endpoint and WebSocket message exchange should pass.
+Tests run migrations against a temporary SQLite database, verify the database
+session/health probe, and check that existing health and WebSocket features
+remain available. PostgreSQL itself must be running and configured to verify
+a live PostgreSQL connection.
 
 ## Troubleshooting
 
@@ -162,10 +313,10 @@ Both the health endpoint and WebSocket message exchange should pass.
   `ws://` scheme and `/ws` path, and check that the client is not using a
   different port.
 
-## How Phase 1 fits the NEXORA architecture
+## How this phase fits the NEXORA architecture
 
-FastAPI provides the Python API foundation; asyncio-backed WebSockets provide
-the live communication path for future clients. Configuration and logging are
-centralized so later services can be added without putting database, MQTT,
-device, or interface logic into route handlers. Subsequent phases will add
-those components in the order specified by the NEXORA system specification.
+FastAPI remains the Python API layer. Its WebSocket manager handles real-time
+clients, while SQLAlchemy sessions provide persistence to PostgreSQL and
+Alembic manages database schema changes. Later phases may connect the backend
+to MQTT, Mosquitto, and ESP32 devices; those integrations are not included
+here.

@@ -1,12 +1,20 @@
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices
+from pydantic import Field
+from pydantic_settings import BaseSettings
+from pydantic_settings import SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_name: str = "NEXORA"
     environment: str = "development"
     log_level: str = "INFO"
+    database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_URL", "NEXORA_DATABASE_URL"),
+        repr=False,
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
