@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 
 class MockSpeechRecognition {
@@ -52,12 +52,13 @@ describe("NEXORA dashboard", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
   it("shows local demo devices and controls them without API writes", async () => {
     render(<App />);
-    expect(screen.getByRole("heading", { name: /good evening/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /good (morning|afternoon|evening)/i })).toBeInTheDocument();
     expect(screen.getAllByText("Ambient light").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getAllByRole("button", { name: "Turn off Ambient light" })[0]);
@@ -65,6 +66,21 @@ describe("NEXORA dashboard", () => {
     await waitFor(() => expect(screen.getAllByText(/Powered off · local demo/).length).toBeGreaterThan(1));
     const fetcher = vi.mocked(fetch);
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("/command"))).toBe(false);
+  });
+
+  it("updates the greeting from the local time while the dashboard is open", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 23, 8));
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Good morning, Prince" })).toBeInTheDocument();
+
+    vi.setSystemTime(new Date(2026, 9, 23, 13));
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(screen.getByRole("heading", { name: "Good afternoon, Prince" })).toBeInTheDocument();
   });
 
   it("sends commands for backend simulated devices and renders confirmed state", async () => {

@@ -141,7 +141,15 @@ function formatTime(value?: string): string {
   }).format(new Date(value));
 }
 
+function greetingFor(date: Date): string {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour >= 12 && hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 function App() {
+  const [currentTime, setCurrentTime] = useState(() => new Date());
   const [section, setSection] = useState<Section>("overview");
   const [devices, setDevices] = useState<Device[]>([]);
   const [simDevices, setSimDevices] = useState<SimulatedDevice[]>(createDemoDevices);
@@ -175,6 +183,21 @@ function App() {
     [apiDevices, simDevices, simulation],
   );
   const onlineCount = allDevices.filter((device) => device.online).length;
+
+  useEffect(() => {
+    const updateTime = () => setCurrentTime(new Date());
+    const updateWhenVisible = () => {
+      if (document.visibilityState === "visible") updateTime();
+    };
+    const timer = window.setInterval(updateTime, 60_000);
+    window.addEventListener("focus", updateTime);
+    document.addEventListener("visibilitychange", updateWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", updateTime);
+      document.removeEventListener("visibilitychange", updateWhenVisible);
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -573,6 +596,7 @@ function App() {
           {section === "overview" && (
             <OverviewPage
               devices={allDevices}
+              currentTime={currentTime}
               simulation={simulation}
               onlineCount={onlineCount}
               apiConnection={apiConnection}
@@ -651,6 +675,7 @@ function App() {
 
 function OverviewPage(props: {
   devices: AnyDevice[];
+  currentTime: Date;
   simulation: boolean;
   onlineCount: number;
   apiConnection: Connection;
@@ -678,8 +703,8 @@ function OverviewPage(props: {
   return (
     <>
       <section className="welcome-row">
-        <div><span className="eyebrow"><span className="eyebrow-light" /> YOUR HOME, IN SYNC</span><h1>Good evening, <em>Prince</em></h1><p>A calmer, smarter home starts here.</p></div>
-        <div className="date-card"><span className="date-icon"><Sparkles size={16} /></span><div><strong>{new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric" }).format(new Date())}</strong><span>Home overview</span></div></div>
+        <div><span className="eyebrow"><span className="eyebrow-light" /> YOUR HOME, IN SYNC</span><h1>{greetingFor(props.currentTime)}, <em>Prince</em></h1><p>A calmer, smarter home starts here.</p></div>
+        <div className="date-card"><span className="date-icon"><Sparkles size={16} /></span><div><strong>{new Intl.DateTimeFormat(undefined, { weekday: "long", month: "short", day: "numeric" }).format(props.currentTime)}</strong><span>Home overview</span></div></div>
       </section>
       <section className="metrics-grid" aria-label="Home summary">
         <MetricCard icon={Radio} label="Devices online" value={`${props.onlineCount}/${props.devices.length}`} detail="Across your home" />
