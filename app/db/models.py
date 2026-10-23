@@ -101,6 +101,9 @@ class AutomationRule(Base):
         JSON, default=list, nullable=False
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

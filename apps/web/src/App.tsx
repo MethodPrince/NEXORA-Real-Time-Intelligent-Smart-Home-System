@@ -6,6 +6,7 @@ import {
   Bot,
   ChevronDown,
   CircleHelp,
+  Clock3,
   Command,
   Fan,
   Home,
@@ -29,7 +30,9 @@ import {
 import {
   ApiError,
   createDemoDevices,
+  type AutomationRule,
   isDeviceEvent,
+  isAssistantGreeting,
   matchVoiceTargets,
   NexoraApi,
   parseVoiceCommand,
@@ -38,6 +41,7 @@ import {
   voiceDeviceKind,
   websocketUrl,
   type ActivityItem,
+  type AutomationCreate,
   type Device,
   type DeviceEvent,
   type SimulatedDevice,
@@ -152,6 +156,10 @@ function App() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [section, setSection] = useState<Section>("overview");
   const [devices, setDevices] = useState<Device[]>([]);
+  const [automations, setAutomations] = useState<AutomationRule[]>([]);
+  const [automationError, setAutomationError] = useState("");
+  const [automationLoading, setAutomationLoading] = useState(false);
+  const [automationBusy, setAutomationBusy] = useState(false);
   const [simDevices, setSimDevices] = useState<SimulatedDevice[]>(createDemoDevices);
   const [simulation, setSimulation] = useState(true);
   const [apiConnection, setApiConnection] = useState<Connection>("checking");
@@ -167,10 +175,10 @@ function App() {
   const [assistantMessages, setAssistantMessages] = useState([
     {
       from: "nora",
-      text: "Hi, I’m NORA. Tap the microphone or type a command to control your home.",
+      text: "Hi, I’m NORA. You can call me Method. Tap the microphone and say “Hey Method, turn on the living room light.”",
     },
   ]);
-  const [voiceStatus, setVoiceStatus] = useState("Tap the microphone and say a command.");
+  const [voiceStatus, setVoiceStatus] = useState("Tap the microphone, then say “Hey Method” or “Hello Method” and your command.");
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const tickRef = useRef(0);
@@ -218,6 +226,31 @@ function App() {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (section !== "automations") return;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const rules = await api.listAutomations();
+        if (!alive) return;
+        setAutomations(rules);
+        setAutomationError("");
+      } catch (error) {
+        if (!alive) return;
+        setAutomationError(error instanceof ApiError ? error.message : "Could not load automations.");
+      } finally {
+        if (alive) setAutomationLoading(false);
+      }
+    };
+    setAutomationLoading(true);
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [section]);
 
   useEffect(() => {
     let socket: WebSocket | undefined;
@@ -342,6 +375,68 @@ function App() {
     }
   }
 
+  async function createAutomation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    if (!form.getAll("days").length) {
+      setAutomationError("Select at least one day for this schedule.");
+      return;
+    }
+    const command = String(form.get("command")) as AutomationCreate["action"]["command"];
+    const automation: AutomationCreate = {
+      name: String(form.get("name")).trim(),
+      trigger: {
+        type: "schedule",
+        time: String(form.get("time")),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+        days: form.getAll("days").map((day) => Number(day)),
+      },
+      action: {
+        device_id: String(form.get("device_id")),
+        command,
+      },
+    };
+    setAutomationBusy(true);
+    try {
+      const created = await api.createAutomation(automation);
+      setAutomations((current) => [created, ...current]);
+      setToast("Automation saved to your account.");
+      formElement.reset();
+    } catch (error) {
+      setAutomationError(error instanceof ApiError ? error.message : "Could not save automation.");
+    } finally {
+      setAutomationBusy(false);
+    }
+  }
+
+  async function updateAutomation(rule: AutomationRule, enabled: boolean) {
+    setAutomationBusy(true);
+    try {
+      const updated = await api.updateAutomation(rule.id, { enabled });
+      setAutomations((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setAutomationError("");
+    } catch (error) {
+      setAutomationError(error instanceof ApiError ? error.message : "Could not update automation.");
+    } finally {
+      setAutomationBusy(false);
+    }
+  }
+
+  async function deleteAutomation(rule: AutomationRule) {
+    setAutomationBusy(true);
+    try {
+      await api.deleteAutomation(rule.id);
+      setAutomations((current) => current.filter((item) => item.id !== rule.id));
+      setAutomationError("");
+      setToast("Automation deleted.");
+    } catch (error) {
+      setAutomationError(error instanceof ApiError ? error.message : "Could not delete automation.");
+    } finally {
+      setAutomationBusy(false);
+    }
+  }
+
   function handleDeviceEvent(
     event: DeviceEvent,
     updateDevices: typeof setDevices,
@@ -391,9 +486,14 @@ function App() {
     ]);
     setAssistantText("");
 
+    if (isAssistantGreeting(prompt)) {
+      respondAsNora("Hello! I’m listening. What would you like me to do?");
+      return;
+    }
+
     const command = parseVoiceCommand(prompt);
     if (!command) {
-      respondAsNora("I can control lights, fans, and curtains. Try “switch on the living room light.”");
+      respondAsNora("I can control lights, fans, and curtains. Try “Hey Method, switch on the living room light.”");
       return;
     }
 
@@ -627,7 +727,18 @@ function App() {
             />
           )}
           {section === "activity" && <ActivityPage devices={allDevices} events={events} />}
-          {section === "automations" && <AutomationPage />}
+          {section === "automations" && (
+            <AutomationPage
+              devices={devices}
+              rules={automations}
+              loading={automationLoading}
+              error={automationError}
+              busy={automationBusy}
+              onCreate={createAutomation}
+              onToggle={updateAutomation}
+              onDelete={deleteAutomation}
+            />
+          )}
           {section === "nora" && (
             <NoraPage
               messages={assistantMessages}
@@ -816,14 +927,85 @@ function ActivityPage({ devices, events }: { devices: AnyDevice[]; events: Devic
   </>;
 }
 
-function AutomationPage() {
+function AutomationPage(props: {
+  devices: Device[];
+  rules: AutomationRule[];
+  loading: boolean;
+  error: string;
+  busy: boolean;
+  onCreate: (event: FormEvent<HTMLFormElement>) => void;
+  onToggle: (rule: AutomationRule, enabled: boolean) => void;
+  onDelete: (rule: AutomationRule) => void;
+}) {
+  const supportedDevices = props.devices.filter((device) =>
+    /light|lamp|fan|curtain/i.test(device.device_type),
+  );
+  const [selectedDeviceId, setSelectedDeviceId] = useState(supportedDevices[0]?.id ?? "");
+  const selectedDevice = supportedDevices.find((device) => device.id === selectedDeviceId)
+    ?? supportedDevices[0];
+  const isCurtain = selectedDevice?.device_type.toLowerCase().includes("curtain") ?? false;
+  const days = [
+    ["0", "Mon"], ["1", "Tue"], ["2", "Wed"], ["3", "Thu"],
+    ["4", "Fri"], ["5", "Sat"], ["6", "Sun"],
+  ];
   return <>
-    <PageHeading eyebrow="HOME ROUTINES" title="Automations" description="A consistent place for schedules and intelligent routines." action={<button className="button secondary" disabled><Plus size={16} />Create rule</button>} />
-    <section className="automation-banner"><div className="automation-orb"><Sparkles size={23} /></div><div><span className="eyebrow">AUTOMATION BUILDER</span><h2>Make your home work in sync</h2><p>The backend has an AutomationRule model, but no rules API or execution engine. These controls are a design preview and do not create or run rules.</p></div><span className="preview-label">PREVIEW</span></section>
-    <div className="automation-preview-grid">
-      <article className="automation-preview-card"><span className="automation-icon"><Lightbulb size={18} /></span><div><strong>Evening ambience</strong><small>Sunset · Living room lights</small></div><span className="disabled-switch" /></article>
-      <article className="automation-preview-card"><span className="automation-icon blue"><Fan size={18} /></span><div><strong>Comfort airflow</strong><small>Temperature above 25°C · Fan</small></div><span className="disabled-switch" /></article>
-      <article className="automation-preview-card"><span className="automation-icon orange"><Shield size={18} /></span><div><strong>Away mode</strong><small>When home is empty · Security</small></div><span className="disabled-switch" /></article>
+    <PageHeading eyebrow="HOME ROUTINES" title="Automations" description="Create schedules that are saved with your home and run from the backend." />
+    <section className="automation-banner"><div className="automation-orb"><Sparkles size={23} /></div><div><span className="eyebrow">SCHEDULE BUILDER</span><h2>Your routines, running on time</h2><p>Schedules are stored in the shared database and executed by the NEXORA backend, even when this dashboard is closed.</p></div><span className="preview-label">BACKEND ACTIVE</span></section>
+    {props.error && <div className="automation-error" role="alert">{props.error}</div>}
+    <div className="automation-workspace">
+      <form className="panel automation-form" onSubmit={props.onCreate}>
+        <div className="panel-heading"><div><span className="eyebrow">NEW SCHEDULE</span><h2>Create an automation</h2></div><span className="automation-form-icon"><Plus size={18} /></span></div>
+        <label className="automation-field">Name<input name="name" placeholder="e.g. Weekday morning lights" maxLength={200} required /></label>
+        {supportedDevices.length ? <>
+          <label className="automation-field">Device
+            <select name="device_id" value={selectedDevice?.id ?? ""} onChange={(event) => setSelectedDeviceId(event.target.value)} required>
+              {supportedDevices.map((device) => <option key={device.id} value={device.id}>{device.name}{device.room ? ` · ${device.room}` : ""}</option>)}
+            </select>
+          </label>
+          <label className="automation-field">Action
+            <select name="command">
+              {isCurtain
+                ? <><option value="open">Open</option><option value="close">Close</option></>
+                : <><option value="turn_on">Turn on</option><option value="turn_off">Turn off</option></>}
+            </select>
+          </label>
+        </> : <div className="automation-empty-devices">Register a backend device first. Schedules can control lights, fans, and curtains.</div>}
+        <label className="automation-field">Time<input type="time" name="time" defaultValue="19:00" required /></label>
+        <fieldset className="schedule-days">
+          <legend>Repeat on</legend>
+          {days.map(([value, label]) => <label key={value}><input type="checkbox" name="days" value={value} defaultChecked /><span>{label}</span></label>)}
+        </fieldset>
+        <p className="automation-timezone"><Activity size={14} /> Uses this device’s timezone ({Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"}); the timezone is saved with the rule.</p>
+        <button className="button primary automation-submit" type="submit" disabled={props.busy || !supportedDevices.length}>
+          <Plus size={16} />Save schedule
+        </button>
+      </form>
+      <section className="panel automation-list">
+        <div className="panel-heading"><div><span className="eyebrow">SAVED TO YOUR HOME</span><h2>Your schedules</h2></div><span className="subtle-count">{props.rules.length} rules</span></div>
+        {props.loading && !props.rules.length && <p className="automation-list-message">Loading your saved schedules…</p>}
+        {!props.loading && !props.rules.length && !props.error && <EmptyState title="No schedules yet" detail="Create a schedule to automate one of your connected lights, fans, or curtains." />}
+        <div className="saved-automation-list">
+          {props.rules.map((rule) => {
+            const device = props.devices.find((item) => item.id === rule.action.device_id);
+            const action = rule.action.command.replace("turn_", "").replace("_", " ");
+            const time = rule.trigger.time;
+            const nextRun = rule.next_run_at
+              ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short", timeZone: rule.trigger.timezone }).format(new Date(rule.next_run_at))
+              : "Paused";
+            return <article className={`saved-automation ${rule.enabled ? "" : "paused"}`} key={rule.id}>
+              <span className="automation-icon"><Clock3 size={18} /></span>
+              <div className="saved-automation-content">
+                <strong>{rule.name}</strong>
+                <span>{action} · {device?.name ?? "Device unavailable"}</span>
+                <small>{time} · {rule.trigger.timezone} · {rule.trigger.days.map((day) => days[day]?.[1]).join(", ")} · next {nextRun}</small>
+                {rule.last_error && <small className="automation-run-error">Last run failed: {rule.last_error}</small>}
+              </div>
+              <button className={`switch-control ${rule.enabled ? "enabled" : ""}`} type="button" role="switch" aria-checked={rule.enabled} aria-label={`${rule.enabled ? "Pause" : "Enable"} ${rule.name}`} disabled={props.busy} onClick={() => props.onToggle(rule, !rule.enabled)}><i /></button>
+              <button className="icon-button automation-delete" type="button" aria-label={`Delete ${rule.name}`} disabled={props.busy} onClick={() => props.onDelete(rule)}><Trash2 size={15} /></button>
+            </article>;
+          })}
+        </div>
+      </section>
     </div>
   </>;
 }
@@ -838,12 +1020,12 @@ function NoraPage(props: {
   isListening: boolean;
 }) {
   return <div className="nora-page">
-    <section className="nora-hero"><div className="nora-orb large"><span /><i /><b /></div><span className="eyebrow">NEXORA ORCHESTRATION & RESPONSE ASSISTANT</span><h1>Meet <em>NORA</em></h1><p>Your home’s intelligent companion—designed to make everyday control feel effortless.</p><span className="preview-label">INTERFACE PREVIEW</span></section>
+    <section className="nora-hero"><div className="nora-orb large"><span /><i /><b /></div><span className="eyebrow">NEXORA ORCHESTRATION & RESPONSE ASSISTANT</span><h1>Meet <em>NORA</em></h1><p>Your home’s intelligent companion. Call me Method: say “Hey Method” or “Hello Method” before your command.</p><span className="preview-label">INTERFACE PREVIEW</span></section>
     <section className="panel nora-chat">
       <div className="panel-heading"><div><span className="eyebrow">CONVERSATION</span><h2>Home assistant</h2></div><span className="status-pill positive"><span className="tiny-dot" />Local voice controls</span></div>
       <div className="chat-log">{props.messages.map((message, index) => <div className={`chat-message ${message.from === "you" ? "from-user" : ""}`} key={`${index}-${message.from}`}><span className="chat-avatar">{message.from === "you" ? "P" : <Sparkles size={15} />}</span><div><small>{message.from === "you" ? "YOU" : "NORA · LOCAL"}</small><p>{message.text}</p></div></div>)}</div>
-      <form className="chat-input" onSubmit={props.onSubmit}><button type="button" className={`icon-button mic-button ${props.isListening ? "listening" : ""}`} onClick={props.onMic} aria-label={props.isListening ? "Stop listening" : "Start voice command"} aria-pressed={props.isListening}><Mic size={18} /></button><input value={props.text} onChange={(event) => props.onText(event.target.value)} placeholder="Say or type: switch on the living room light" aria-label="Message NORA" /><button className="button primary" type="submit">Send <ArrowUpRight size={15} /></button></form>
-      <div className="chat-foot"><span><LockKeyhole size={13} /> {props.voiceStatus} · no AI service; audio and transcripts are not sent to the NEXORA backend</span><span>Try: “switch on the living room light”</span></div>
+      <form className="chat-input" onSubmit={props.onSubmit}><button type="button" className={`icon-button mic-button ${props.isListening ? "listening" : ""}`} onClick={props.onMic} aria-label={props.isListening ? "Stop listening" : "Start voice command"} aria-pressed={props.isListening}><Mic size={18} /></button><input value={props.text} onChange={(event) => props.onText(event.target.value)} placeholder="Hey Method, turn on the living room light" aria-label="Message NORA" /><button className="button primary" type="submit">Send <ArrowUpRight size={15} /></button></form>
+      <div className="chat-foot"><span><LockKeyhole size={13} /> {props.voiceStatus} · no AI service; audio and transcripts are not sent to the NEXORA backend</span><span>Try: “Hey Method, turn on the living room light”</span></div>
     </section>
   </div>;
 }

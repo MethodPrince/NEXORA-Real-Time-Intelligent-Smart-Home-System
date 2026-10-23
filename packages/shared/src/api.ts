@@ -4,6 +4,9 @@ import type {
   DeviceCommandAccepted,
   DeviceCreate,
   DeviceUpdate,
+  AutomationCreate,
+  AutomationRule,
+  AutomationUpdate,
 } from "./types";
 
 export class ApiError extends Error {
@@ -54,6 +57,30 @@ export class NexoraApi {
     return this.request(`/devices/${encodeURIComponent(id)}/command`, {
       method: "POST",
       body: JSON.stringify(command),
+    });
+  }
+
+  async listAutomations(): Promise<AutomationRule[]> {
+    return this.request("/automations");
+  }
+
+  async createAutomation(automation: AutomationCreate): Promise<AutomationRule> {
+    return this.request("/automations", {
+      method: "POST",
+      body: JSON.stringify(automation),
+    });
+  }
+
+  async updateAutomation(id: string, automation: AutomationUpdate): Promise<AutomationRule> {
+    return this.request(`/automations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(automation),
+    });
+  }
+
+  async deleteAutomation(id: string): Promise<void> {
+    await this.request(`/automations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
     });
   }
 

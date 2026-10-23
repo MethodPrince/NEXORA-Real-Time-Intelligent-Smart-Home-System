@@ -41,6 +41,48 @@ export interface DeviceCommandAccepted {
   state?: SimulatedDeviceState;
 }
 
+export interface AutomationTrigger {
+  type: "schedule";
+  time: string;
+  timezone: string;
+  days: number[];
+}
+
+export interface AutomationAction {
+  device_id: string;
+  command: "turn_on" | "turn_off" | "open" | "close";
+}
+
+export interface AutomationRule {
+  id: string;
+  name: string;
+  description: string | null;
+  trigger: AutomationTrigger;
+  action: AutomationAction;
+  enabled: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationCreate {
+  name: string;
+  description?: string | null;
+  trigger: AutomationTrigger;
+  action: AutomationAction;
+  enabled?: boolean;
+}
+
+export interface AutomationUpdate {
+  name?: string;
+  description?: string | null;
+  trigger?: AutomationTrigger;
+  action?: AutomationAction;
+  enabled?: boolean;
+}
+
 export interface SimulatedDeviceState {
   power?: boolean;
   brightness?: number;

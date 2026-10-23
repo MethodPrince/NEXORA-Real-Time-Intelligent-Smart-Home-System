@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NexoraApi, websocketUrl } from "./api";
 import { createDemoDevices, tickSimulatedSensors, toggleSimulatedDevice } from "./simulator";
-import { matchVoiceTargets, parseVoiceCommand } from "./voice";
+import { isAssistantGreeting, matchVoiceTargets, parseVoiceCommand } from "./voice";
 
 describe("shared API contract", () => {
   it("uses only existing device endpoints", async () => {
@@ -18,6 +18,14 @@ describe("shared API contract", () => {
     await api.updateDevice("device-1", { room: "Living room" });
     await api.deleteDevice("device-1");
     await api.sendCommand("device-1", { command: "set_power", parameters: { enabled: true } });
+    await api.listAutomations();
+    await api.createAutomation({
+      name: "Weeknight lights",
+      trigger: { type: "schedule", time: "19:00", timezone: "UTC", days: [0, 1, 2, 3, 4] },
+      action: { device_id: "device-1", command: "turn_on" },
+    });
+    await api.updateAutomation("rule-1", { enabled: false });
+    await api.deleteAutomation("rule-1");
 
     expect(fetcher.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
       ["http://backend.test/devices", "GET"],
@@ -25,6 +33,10 @@ describe("shared API contract", () => {
       ["http://backend.test/devices/device-1", "PATCH"],
       ["http://backend.test/devices/device-1", "DELETE"],
       ["http://backend.test/devices/device-1/command", "POST"],
+      ["http://backend.test/automations", "GET"],
+      ["http://backend.test/automations", "POST"],
+      ["http://backend.test/automations/rule-1", "PATCH"],
+      ["http://backend.test/automations/rule-1", "DELETE"],
     ]);
   });
 
@@ -64,6 +76,22 @@ describe("local simulator", () => {
   });
 
   describe("local voice command matching", () => {
+    it("recognizes Method greetings and voice commands addressed to Method", () => {
+      expect(isAssistantGreeting("Hey Method")).toBe(true);
+      expect(isAssistantGreeting("Hello Method!")).toBe(true);
+      expect(isAssistantGreeting("Hey NORA")).toBe(false);
+      expect(parseVoiceCommand("Hey Method, turn on the living room light")).toMatchObject({
+        action: "on",
+        kind: "light",
+        target: "living room",
+      });
+      expect(parseVoiceCommand("Hello Method, open the bedroom curtains")).toMatchObject({
+        action: "open",
+        kind: "curtain",
+        target: "bedroom",
+      });
+    });
+
     it("parses a spoken light command and identifies a named room", () => {
       const command = parseVoiceCommand("NORA, can you please switch on the living room light?");
       expect(command).toEqual({

@@ -193,9 +193,36 @@ Expo development build and the app must not be launched in stock Expo Go.
 Build and run the Android development app with `npx expo run:android` after
 installing dependencies and setting up Android Studio.
 
-Activity and security history, automation execution, and push delivery remain
-UI previews because the backend does not currently expose the required
-APIs/services.
+## Scheduled automations
+
+The web dashboard and mobile app can create, pause, resume, and delete
+recurring schedules for backend-registered lights, fans, and curtains. Rules
+are stored in the shared database. Schedules use an IANA time zone and run on
+the selected weekdays; mobile-created schedules repeat every day. Simulated
+devices are updated in the database, while physical-device actions are sent
+through MQTT.
+
+Apply the schema migration before using the automation API:
+
+```powershell
+python -m alembic upgrade head
+```
+
+The FastAPI process runs the schedule worker. To have schedules run when your
+computer is off and see the same rules from another laptop, deploy FastAPI as
+an always-on service and configure both clients to use its HTTPS URL. Configure
+that service's `DATABASE_URL` to the same shared PostgreSQL database used by
+the clients, and apply migrations during deployment. The web client uses
+`VITE_API_URL`; the mobile client uses `EXPO_PUBLIC_API_URL`. The repository
+does not configure a hosting provider or deploy the backend automatically, so
+local development alone does not provide cross-laptop persistence or
+background execution. Keep database credentials in the hosting provider's
+secret/environment settings, never in client environment variables.
+
+The scheduler polls every 15 seconds. For reliable schedule execution, run one
+backend scheduler instance; horizontally scaling the API also scales its
+scheduler workers. Activity/security history and push delivery are not
+implemented.
 
 Run client checks:
 

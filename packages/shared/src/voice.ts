@@ -18,8 +18,12 @@ const fillerWords = new Set([
   "could",
   "every",
   "for",
+  "hey",
+  "hello",
+  "hi",
   "in",
   "me",
+  "method",
   "my",
   "nora",
   "off",
@@ -32,6 +36,10 @@ const fillerWords = new Set([
   "would",
   "you",
 ]);
+
+export function isAssistantGreeting(text: string): boolean {
+  return /^(?:hey|hello|hi)\s+method[.!?]*$/i.test(text.trim());
+}
 
 export function parseVoiceCommand(text: string): VoiceCommand | null {
   const normalized = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim();

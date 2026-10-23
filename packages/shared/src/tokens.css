@@ -1,14 +1,14 @@
 :root {
-  --nexora-ink: #111827;
-  --nexora-muted-ink: #667085;
-  --nexora-paper: #f3f7fa;
-  --nexora-surface: #ffffff;
-  --nexora-surface-soft: #eaf1f6;
-  --nexora-border: #d8e2ea;
-  --nexora-charcoal: #101821;
-  --nexora-charcoal-soft: #182431;
-  --nexora-cyan: #00c8e8;
-  --nexora-blue: #3987ff;
+  --nexora-ink: #f2f0eb;
+  --nexora-muted-ink: #aaa7a0;
+  --nexora-paper: #111214;
+  --nexora-surface: #1b1c1f;
+  --nexora-surface-soft: #26272a;
+  --nexora-border: #343538;
+  --nexora-charcoal: #101113;
+  --nexora-charcoal-soft: #1a1b1e;
+  --nexora-cyan: #ffad4d;
+  --nexora-blue: #f5c06a;
   --nexora-spacing-xs: 4px;
   --nexora-spacing-sm: 8px;
   --nexora-spacing-md: 12px;
