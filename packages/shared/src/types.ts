@@ -7,6 +7,8 @@ export interface Device {
   online: boolean;
   created_at: string;
   updated_at: string;
+  simulated?: boolean;
+  state?: SimulatedDeviceState | null;
 }
 
 export interface DeviceCreate {
@@ -15,6 +17,7 @@ export interface DeviceCreate {
   device_type: string;
   status?: string;
   online?: boolean;
+  simulated?: boolean;
 }
 
 export interface DeviceUpdate {
@@ -28,6 +31,22 @@ export interface DeviceUpdate {
 export interface DeviceCommand {
   command: string;
   parameters?: Record<string, unknown>;
+}
+
+export interface DeviceCommandAccepted {
+  device_id: string;
+  topic?: string;
+  status: string;
+  online?: boolean;
+  state?: SimulatedDeviceState;
+}
+
+export interface SimulatedDeviceState {
+  power?: boolean;
+  brightness?: number;
+  speed?: number;
+  position?: number;
+  open?: boolean;
 }
 
 export interface SensorReading {
@@ -51,6 +70,7 @@ export interface DeviceEvent {
   message?: string;
   status?: string;
   online?: boolean;
+  state?: SimulatedDeviceState;
   name?: string;
   sensor_type?: string;
   reading?: number | null;
@@ -60,6 +80,7 @@ export interface DeviceEvent {
 
 export interface SimulatedDevice extends Device {
   simulated: true;
+  demo: true;
   power: boolean;
   speed: number;
   sensor_readings: SensorReading[];

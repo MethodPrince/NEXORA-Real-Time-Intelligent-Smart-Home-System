@@ -5,9 +5,11 @@ health endpoint, a real-time WebSocket system, and PostgreSQL persistence
 managed through SQLAlchemy and Alembic.
 
 The backend includes an optional Mosquitto-compatible MQTT integration for
-device commands, state, sensor readings, and availability. The web dashboard
-and Android-first Expo app use the existing API and provide a local-only
-simulated-device mode. Physical ESP32 hardware is not included or tested.
+physical-device commands, state, sensor readings, and availability. It also
+supports API-managed simulated lights, fans, and curtains whose state is
+persisted and broadcast through the existing WebSocket connection manager.
+The web dashboard and Android-first Expo app retain separate local demo data.
+Physical ESP32 hardware is not included or tested.
 
 ## Project layout
 
@@ -36,7 +38,8 @@ app/
 │   ├── models.py                  # Initial persistent data models
 │   └── session.py                 # Reusable engine and sessions
 ├── services/
-│   └── mqtt.py                    # MQTT broker lifecycle and device messages
+│   ├── mqtt.py                    # MQTT broker lifecycle and device messages
+│   └── simulator.py               # Persisted simulated state and commands
 ├── websocket/
 │   ├── __init__.py
 │   ├── connection_manager.py
@@ -57,6 +60,7 @@ tests/
 ├── test_devices.py
 ├── test_health.py
 ├── test_mqtt.py
+├── test_simulator.py
 └── test_websocket.py
 alembic.ini
 .env.example
@@ -160,17 +164,38 @@ LAN mode. The computer and phone must be on the same network, the firewall
 must allow the API port, and FastAPI must bind to the LAN interface
 (`--host 0.0.0.0`). Use a trusted HTTPS endpoint outside local development.
 
-Both apps show simulated lights, a fan, and climate readings by default.
-Simulation is in-memory only; simulated device identifiers are not sent to
-the API and simulated actions do not write to Neon. Real devices load through
-the existing Device endpoints. Live MQTT-backed sensor, state, and
-availability updates arrive over the existing `/ws` endpoint when MQTT has
-been explicitly configured and enabled. The apps do not enable MQTT.
+Both apps show local demo lights, a fan, and climate readings by default.
+These demo records are in-memory and separate from backend data. To create a
+persisted simulated device, register a device with type `smart_light`,
+`smart_fan`, or `smart_curtain` and select **Run as a backend simulated
+device**. The existing `POST /devices` and `POST /devices/{device_id}/command`
+API paths manage it; state is stored in the existing device status column, so
+no database migration is needed. Simulator commands are applied by FastAPI,
+saved before the response, and broadcast as `device_state` events over `/ws`.
+The device response includes its `simulated` flag and type-specific `state`
+(light power/brightness, fan power/speed, or curtain position). Mark a
+simulated device offline through the existing device update endpoint to see
+offline status and reject commands. Physical-device commands continue through
+MQTT, which remains disabled by default. The command endpoint accepts
+`set_power` with an `enabled` boolean for lights and fans, `set_brightness`
+with a value from 0 to 100 for lights, `set_speed` from 0 to 3 for fans, and
+`open`, `close`, or `set_position` from 0 to 100 for curtains.
 
-Activity and security history, automation execution, push delivery, and AI or
-voice recognition are shown as clear UI previews because the backend does not
-currently expose the required APIs/services. NORA's light-control example
-acts only on local simulated devices.
+NORA supports tap-to-talk and typed commands for lights, fans, and curtains in
+both clients. It uses browser/OS speech recognition, then interprets the
+transcript locally and sends supported device commands through the existing
+device API. NORA does not send audio or transcripts to an AI service; device
+commands still go to FastAPI when controlling backend devices. Voice input is
+available in browsers that expose `SpeechRecognition` or
+`webkitSpeechRecognition`; typing remains available in unsupported browsers.
+The mobile speech-recognition module is native, so voice input requires an
+Expo development build and the app must not be launched in stock Expo Go.
+Build and run the Android development app with `npx expo run:android` after
+installing dependencies and setting up Android Studio.
+
+Activity and security history, automation execution, and push delivery remain
+UI previews because the backend does not currently expose the required
+APIs/services.
 
 Run client checks:
 

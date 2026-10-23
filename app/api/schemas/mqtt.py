@@ -14,5 +14,7 @@ class DeviceCommandRequest(BaseModel):
 
 class DeviceCommandAccepted(BaseModel):
     device_id: UUID
-    topic: str
+    topic: str | None = None
     status: str
+    online: bool | None = None
+    state: dict[str, object] | None = None

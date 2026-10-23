@@ -13,6 +13,11 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Speech from "expo-speech";
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from "expo-speech-recognition";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -20,9 +25,12 @@ import {
   colors,
   createDemoDevices,
   isDeviceEvent,
+  matchVoiceTargets,
   NexoraApi,
+  parseVoiceCommand,
   tickSimulatedSensors,
   toggleSimulatedDevice,
+  voiceDeviceKind,
   websocketUrl,
   type ActivityItem,
   type Device,
@@ -44,13 +52,39 @@ const navigation: { id: Section; label: string; icon: keyof typeof Ionicons.glyp
 ];
 
 function isSimulated(device: AnyDevice): device is SimulatedDevice {
-  return "simulated" in device && device.simulated;
+  return "demo" in device && device.demo;
 }
 
 function onState(device: AnyDevice) {
-  return isSimulated(device)
-    ? device.power
-    : device.status.toLowerCase() === "on" || device.status.toLowerCase() === "active";
+  if (isSimulated(device)) return device.power;
+  if (device.device_type.toLowerCase().includes("curtain")) {
+    return device.state?.open ?? (device.state?.position ?? 0) > 0;
+  }
+  return device.state?.power
+    ?? (device.status.toLowerCase() === "on" || device.status.toLowerCase() === "active");
+}
+
+function deviceStateLabel(device: AnyDevice) {
+  if (!device.online) return "Offline";
+  if (isSimulated(device)) return device.power ? "Powered on · local demo" : "Powered off · local demo";
+  if (device.device_type.toLowerCase().includes("curtain")) {
+    const position = device.state?.position;
+    return position === undefined ? device.status : `${position}% open`;
+  }
+  if (device.device_type.toLowerCase().includes("fan") && device.state?.speed !== undefined) {
+    return `${onState(device) ? "On" : "Off"} · speed ${device.state.speed}/3`;
+  }
+  if (device.device_type.toLowerCase().includes("light") && device.state?.brightness !== undefined) {
+    return `${onState(device) ? "On" : "Off"} · brightness ${device.state.brightness}%`;
+  }
+  return onState(device) ? "Powered on" : "Powered off";
+}
+
+function controlLabel(device: AnyDevice) {
+  if (device.device_type.toLowerCase().includes("curtain")) {
+    return onState(device) ? "Close" : "Open";
+  }
+  return onState(device) ? "Turn off" : "Turn on";
 }
 
 function deviceIcon(type: string): keyof typeof Ionicons.glyphMap {
@@ -72,9 +106,12 @@ function App() {
   const [name, setName] = useState("");
   const [room, setRoom] = useState("");
   const [deviceType, setDeviceType] = useState("smart_light");
+  const [simulatedDevice, setSimulatedDevice] = useState(false);
   const [noraInput, setNoraInput] = useState("");
+  const [voiceStatus, setVoiceStatus] = useState("Tap the microphone and say a command.");
+  const [isListening, setIsListening] = useState(false);
   const [noraMessages, setNoraMessages] = useState([
-    { from: "nora", text: "Hi, I’m NORA. Ask me to control the local simulated home." },
+    { from: "nora", text: "Hi, I’m NORA. Tap the microphone or type a command to control your home." },
   ]);
   const [noticeVisible, setNoticeVisible] = useState(false);
   const [toast, setToast] = useState("");
@@ -83,6 +120,26 @@ function App() {
     () => [...devices, ...(simulation ? simDevices : [])],
     [devices, simDevices, simulation],
   );
+
+  useSpeechRecognitionEvent("start", () => setIsListening(true));
+  useSpeechRecognitionEvent("end", () => setIsListening(false));
+  useSpeechRecognitionEvent("result", (event) => {
+    const transcript = event.results[0]?.transcript.trim();
+    if (!transcript) return;
+    setNoraInput(transcript);
+    if (event.isFinal) {
+      setVoiceStatus("Command received.");
+      void sendNora(transcript);
+    }
+  });
+  useSpeechRecognitionEvent("error", (event) => {
+    setIsListening(false);
+    const message = event.error === "not-allowed"
+      ? "Microphone or speech permission was denied."
+      : `Voice input failed: ${event.message}`;
+    setVoiceStatus(message);
+    setToast(message);
+  });
 
   useEffect(() => {
     let active = true;
@@ -166,7 +223,14 @@ function App() {
     if (event.device_id) {
       setDevices((current) => current.map((device) => {
         if (device.id !== event.device_id) return device;
-        if (event.type === "device_state" && event.status) return { ...device, status: event.status };
+        if (event.type === "device_state" && event.status) {
+          return {
+            ...device,
+            status: event.status,
+            state: event.state ?? device.state,
+            online: event.online ?? device.online,
+          };
+        }
         if (event.type === "device_availability" && typeof event.online === "boolean") {
           return { ...device, online: event.online };
         }
@@ -185,11 +249,28 @@ function App() {
       return;
     }
     try {
-      await api.sendCommand(device.id, {
-        command: "set_power",
-        parameters: { enabled: !onState(device) },
-      });
-      setToast("Command queued. Waiting for device state.");
+      const isCurtain = device.device_type.toLowerCase().includes("curtain");
+      const result = await api.sendCommand(
+        device.id,
+        isCurtain
+          ? { command: onState(device) ? "close" : "open" }
+          : { command: "set_power", parameters: { enabled: !onState(device) } },
+      );
+      if (result.state) {
+        setDevices((current) => current.map((item) => item.id === device.id
+          ? {
+            ...item,
+            status: isCurtain
+              ? (result.state?.position === 100 ? "Open" : result.state?.position === 0 ? "Closed" : "Partially open")
+              : result.state?.power ? "On" : "Off",
+            online: result.online ?? item.online,
+            state: result.state,
+          }
+          : item));
+      }
+      setToast(result.status === "applied"
+        ? `${device.name} state updated.`
+        : "Command queued. Waiting for device state.");
     } catch (error) {
       setToast(error instanceof ApiError ? error.message : "Unable to send command.");
     }
@@ -205,11 +286,13 @@ function App() {
         name: name.trim(),
         room: room.trim() || null,
         device_type: deviceType.trim(),
+        simulated: simulatedDevice,
       });
       setDevices((current) => [...current, created]);
       setAddVisible(false);
       setName("");
       setRoom("");
+      setSimulatedDevice(false);
       setToast("Device registered.");
     } catch (error) {
       setToast(error instanceof ApiError ? error.message : "Unable to create device.");
@@ -235,30 +318,125 @@ function App() {
     ]);
   }
 
-  function sendNora() {
-    const prompt = noraInput.trim();
+  async function sendNora(promptText = noraInput) {
+    const prompt = promptText.trim();
     if (!prompt) return;
-    const turnOn = prompt.toLowerCase().includes("on");
-    const lights = simDevices.filter((device) => device.device_type.includes("light"));
-    const actsLocally = simulation && prompt.toLowerCase().includes("light") && lights.length > 0;
-    if (actsLocally) {
-      setSimDevices((current) => current.map((device) => (
-        lights.some((light) => light.id === device.id)
-          ? { ...device, power: turnOn, status: turnOn ? "On" : "Off" }
-          : device
-      )));
-    }
     setNoraMessages((current) => [
       ...current,
       { from: "you", text: prompt },
-      {
-        from: "nora",
-        text: actsLocally
-          ? `Local demo: ${lights.length} lights turned ${turnOn ? "on" : "off"}. No backend command was sent.`
-          : "This is a local interface preview. Voice recognition and an AI provider are not connected.",
-      },
     ]);
     setNoraInput("");
+
+    const command = parseVoiceCommand(prompt);
+    if (!command) {
+      respondAsNora("I can control lights, fans, and curtains. Try “switch on the living room light.”");
+      return;
+    }
+
+    const backendTargets = matchVoiceTargets(devices, command);
+    const demoTargets = simulation ? matchVoiceTargets(simDevices, command) : [];
+    const candidates = backendTargets.length ? backendTargets : demoTargets;
+    if (!candidates.length) {
+      respondAsNora(`I couldn’t find a ${command.kind} to control. Check that it’s registered and online.`);
+      return;
+    }
+    if (candidates.some((device) => !device.online)) {
+      const offline = candidates.filter((device) => !device.online).map((device) => device.name);
+      respondAsNora(`${offline.join(", ")} ${offline.length === 1 ? "is" : "are"} offline, so I didn’t send a command.`);
+      return;
+    }
+    if (candidates.length > 1 && !command.all) {
+      respondAsNora(`Which ${command.kind}? I found ${candidates.map((device) => device.name).join(" and ")}. Please include a device name or room.`);
+      return;
+    }
+
+    const selected = command.all ? candidates : candidates.slice(0, 1);
+    const outcomes: string[] = [];
+    for (const device of selected) {
+      const kind = voiceDeviceKind(device.device_type);
+      if (isSimulated(device)) {
+        const power = command.action === "on";
+        const updated = {
+          ...device,
+          power,
+          status: power ? "On" : "Off",
+          updated_at: new Date().toISOString(),
+        };
+        setSimDevices((current) => current.map((item) => item.id === device.id ? updated : item));
+        setEvents((current) => [{
+          type: "device_state" as const,
+          device_id: device.id,
+          status: updated.status,
+          timestamp: updated.updated_at,
+        }, ...current].slice(0, 80));
+        outcomes.push(`${device.name} ${power ? "turned on" : "turned off"} in the local demo`);
+        continue;
+      }
+
+      try {
+        const response = await api.sendCommand(device.id, {
+          command: kind === "curtain" ? command.action : "set_power",
+          ...(kind === "curtain" ? {} : { parameters: { enabled: command.action === "on" } }),
+        });
+        if (response.state) {
+          setDevices((current) => current.map((item) => item.id === device.id
+            ? {
+              ...item,
+              state: response.state,
+              online: response.online ?? item.online,
+              status: kind === "curtain"
+                ? (response.state?.position === 100 ? "Open" : response.state?.position === 0 ? "Closed" : "Partially open")
+                : response.state?.power ? "On" : "Off",
+            }
+            : item));
+          outcomes.push(kind === "curtain"
+            ? `${device.name} ${command.action === "open" ? "opened" : "closed"}`
+            : `${device.name} turned ${command.action}`);
+        } else {
+          outcomes.push(`Command sent to ${device.name}; waiting for device confirmation`);
+        }
+      } catch (error) {
+        outcomes.push(`Could not control ${device.name}: ${error instanceof ApiError ? error.message : "backend unavailable"}`);
+      }
+    }
+    respondAsNora(outcomes.join(". "));
+  }
+
+  function respondAsNora(message: string) {
+    setNoraMessages((current) => [...current, { from: "nora", text: message }]);
+    Speech.speak(message, { language: "en-US" });
+  }
+
+  async function startVoiceInput() {
+    if (isListening) {
+      ExpoSpeechRecognitionModule.stop();
+      return;
+    }
+    if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
+      const message = "Speech recognition is unavailable on this device. You can type a command instead.";
+      setVoiceStatus(message);
+      setToast(message);
+      return;
+    }
+    try {
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        const message = "Microphone and speech-recognition permission are required for voice commands.";
+        setVoiceStatus(message);
+        setToast(message);
+        return;
+      }
+      setVoiceStatus("Listening…");
+      ExpoSpeechRecognitionModule.start({
+        lang: "en-US",
+        interimResults: true,
+        continuous: false,
+      });
+    } catch {
+      const message = "Couldn’t start voice input. Try again or type your command.";
+      setVoiceStatus(message);
+      setToast(message);
+    }
   }
 
   const currentPage = navigation.find((item) => item.id === section)?.label ?? "Home";
@@ -285,7 +463,7 @@ function App() {
           {section === "devices" && <DevicesScreen devices={visibleDevices} onControl={control} onAdd={() => setAddVisible(true)} onDelete={deleteDevice} />}
           {section === "activity" && <ActivityScreen devices={visibleDevices} events={events} />}
           {section === "automations" && <AutomationsScreen />}
-          {section === "nora" && <NoraScreen messages={noraMessages} value={noraInput} onChange={setNoraInput} onSend={sendNora} />}
+          {section === "nora" && <NoraScreen messages={noraMessages} value={noraInput} onChange={setNoraInput} onSend={() => void sendNora()} onMic={() => void startVoiceInput()} voiceStatus={voiceStatus} isListening={isListening} />}
           {section === "settings" && <SettingsScreen apiStatus={apiStatus} socketStatus={socketStatus} simulation={simulation} onToggleSimulation={() => setSimulation((value) => !value)} />}
         </ScrollView>
         <View style={styles.bottomNav}>
@@ -305,7 +483,11 @@ function App() {
             <Text style={styles.fieldLabel}>Name</Text><TextInput value={name} onChangeText={setName} placeholder="Hallway light" placeholderTextColor="#9AA6AE" style={styles.input} />
             <Text style={styles.fieldLabel}>Room</Text><TextInput value={room} onChangeText={setRoom} placeholder="Hallway" placeholderTextColor="#9AA6AE" style={styles.input} />
             <Text style={styles.fieldLabel}>Device type</Text><TextInput value={deviceType} onChangeText={setDeviceType} placeholder="smart_light" placeholderTextColor="#9AA6AE" style={styles.input} autoCapitalize="none" />
-            <Text style={styles.formHint}>Creates a real device through the NEXORA API.</Text>
+            <Pressable style={styles.simulatorOption} onPress={() => setSimulatedDevice((value) => !value)} accessibilityRole="checkbox" accessibilityState={{ checked: simulatedDevice }}>
+              <Ionicons name={simulatedDevice ? "checkbox" : "square-outline"} size={17} color="#087F95" />
+              <Text style={styles.formHint}>Run as a backend simulated device</Text>
+            </Pressable>
+            <Text style={styles.formHint}>Backend simulated state persists and updates live. Local demo devices remain separate.</Text>
             <Pressable style={styles.primaryButton} onPress={() => void addDevice()}><Text style={styles.primaryButtonText}>Create device</Text></Pressable>
           </View>
         </KeyboardAvoidingView>
@@ -359,13 +541,13 @@ function SectionHeader({ title, action, onAction }: { title: string; action?: st
 
 function DeviceTile({ device, onControl, onDelete }: { device: AnyDevice; onControl: () => void; onDelete?: () => void }) {
   const sensor = isSimulated(device) ? device.sensor_readings[0] : undefined;
-  const actuator = /light|fan/i.test(device.device_type);
+  const actuator = /light|fan|curtain/i.test(device.device_type);
   const on = onState(device);
   return <View style={styles.deviceTile}>
-    <View style={styles.tileTop}><View style={[styles.deviceGlyph, on && styles.deviceGlyphOn]}><Ionicons name={deviceIcon(device.device_type)} size={20} color={on ? "#087F95" : "#71818F"} /></View><View style={styles.tileActions}>{onDelete && !isSimulated(device) && <Pressable onPress={onDelete} accessibilityLabel={`Delete ${device.name}`}><Ionicons name="trash-outline" size={15} color="#87949E" /></Pressable>}<View style={[styles.onlineDot, { backgroundColor: device.online ? "#31B67B" : "#B8C1C8" }]} /></View></View>
-    <Text style={styles.deviceName} numberOfLines={1}>{device.name}</Text><Text style={styles.deviceRoom} numberOfLines={1}>{device.room || "Unassigned"}{isSimulated(device) ? " · SIM" : ""}</Text>
-    {sensor ? <View style={styles.sensorInline}><Text style={styles.sensorInlineValue}>{sensor.reading}{sensor.unit}</Text><Text style={styles.mutedText}>{sensor.name}</Text></View> : <Text style={styles.deviceState}>{device.online ? (on ? "Powered on" : "Powered off") : "Offline"}</Text>}
-    {actuator && <Pressable style={[styles.controlButton, on && styles.controlButtonOn]} onPress={onControl}><Text style={[styles.controlText, on && styles.controlTextOn]}>{on ? "TURN OFF" : "TURN ON"}</Text><Ionicons name="power-outline" size={15} color={on ? "#07849A" : "#667085"} /></Pressable>}
+    <View style={styles.tileTop}><View style={[styles.deviceGlyph, on && styles.deviceGlyphOn]}><Ionicons name={deviceIcon(device.device_type)} size={20} color={on ? "#087F95" : "#71818F"} /></View><View style={styles.tileActions}>{onDelete && !isSimulated(device) && <Pressable onPress={onDelete} accessibilityLabel={`Delete ${device.name}`}><Ionicons name="trash-outline" size={15} color="#87949E" /></Pressable>}<View style={[styles.onlineDot, { backgroundColor: device.online ? "#31B67B" : "#B8C1C8" }]} /><Text style={styles.onlineText}>{device.online ? "Online" : "Offline"}</Text></View></View>
+    <Text style={styles.deviceName} numberOfLines={1}>{device.name}</Text><Text style={styles.deviceRoom} numberOfLines={1}>{device.room || "Unassigned"}{isSimulated(device) ? " · DEMO" : ""}{!isSimulated(device) && device.simulated ? " · SIM" : ""}</Text>
+    {sensor ? <View style={styles.sensorInline}><Text style={styles.sensorInlineValue}>{sensor.reading}{sensor.unit}</Text><Text style={styles.mutedText}>{sensor.name}</Text></View> : <Text style={styles.deviceState}>{deviceStateLabel(device)}</Text>}
+    {actuator && <Pressable style={[styles.controlButton, on && styles.controlButtonOn]} onPress={onControl}><Text style={[styles.controlText, on && styles.controlTextOn]}>{controlLabel(device).toUpperCase()}</Text><Ionicons name="power-outline" size={15} color={on ? "#07849A" : "#667085"} /></Pressable>}
   </View>;
 }
 
@@ -373,7 +555,7 @@ function DevicesScreen({ devices, onControl, onAdd, onDelete }: { devices: AnyDe
   const rooms = [...new Set(devices.map((device) => device.room || "Unassigned"))];
   return <>
     <View style={styles.screenIntro}><Text style={styles.eyebrow}>DEVICE MANAGEMENT</Text><Text style={styles.screenTitle}>Your devices</Text><Text style={styles.mutedText}>Room-by-room controls · {devices.length} devices</Text></View>
-    <Pressable style={styles.outlineButton} onPress={onAdd}><Ionicons name="add" size={18} color="#087F95" /><Text style={styles.outlineButtonText}>Register real device</Text></Pressable>
+    <Pressable style={styles.outlineButton} onPress={onAdd}><Ionicons name="add" size={18} color="#087F95" /><Text style={styles.outlineButtonText}>Register device</Text></Pressable>
     {rooms.map((room) => <View key={room}><SectionHeader title={room} action={`${devices.filter((device) => (device.room || "Unassigned") === room).length}`} /><View style={styles.deviceGrid}>{devices.filter((device) => (device.room || "Unassigned") === room).map((device) => <DeviceTile key={device.id} device={device} onControl={() => onControl(device)} onDelete={() => onDelete(device)} />)}</View></View>)}
     {!devices.length && <EmptyCard text="No devices loaded. Check the API or enable the simulator in Settings." />}
   </>;
@@ -402,18 +584,26 @@ function AutomationsScreen() {
   </>;
 }
 
-function NoraScreen({ messages, value, onChange, onSend }: { messages: { from: string; text: string }[]; value: string; onChange: (text: string) => void; onSend: () => void }) {
+function NoraScreen({ messages, value, onChange, onSend, onMic, voiceStatus, isListening }: {
+  messages: { from: string; text: string }[];
+  value: string;
+  onChange: (text: string) => void;
+  onSend: () => void;
+  onMic: () => void;
+  voiceStatus: string;
+  isListening: boolean;
+}) {
   return <>
-    <View style={styles.noraHero}><View style={styles.noraHalo}><Ionicons name="sparkles" size={28} color="#9AF0FF" /></View><Text style={styles.eyebrowLight}>NEXORA HOME COMPANION</Text><Text style={styles.noraHeading}>Hello, I’m NORA.</Text><Text style={styles.heroText}>Assistant interface preview · local demo only</Text></View>
+    <View style={styles.noraHero}><View style={styles.noraHalo}><Ionicons name="sparkles" size={28} color="#9AF0FF" /></View><Text style={styles.eyebrowLight}>NEXORA HOME COMPANION</Text><Text style={styles.noraHeading}>Hello, I’m NORA.</Text><Text style={styles.heroText}>Tap the microphone or type a command to control your home.</Text></View>
     <View style={[styles.panel, { marginTop: 14 }]}>
       <FlatList
         data={messages}
         keyExtractor={(_, index) => `nora-${index}`}
         scrollEnabled={false}
-        renderItem={({ item }) => <View style={[styles.chatMessage, item.from === "you" && styles.chatUser]}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>{item.from === "you" ? "P" : "N"}</Text></View><View style={styles.chatBubble}><Text style={styles.chatLabel}>{item.from === "you" ? "YOU" : "NORA · PREVIEW"}</Text><Text style={styles.chatText}>{item.text}</Text></View></View>}
+        renderItem={({ item }) => <View style={[styles.chatMessage, item.from === "you" && styles.chatUser]}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>{item.from === "you" ? "P" : "N"}</Text></View><View style={styles.chatBubble}><Text style={styles.chatLabel}>{item.from === "you" ? "YOU" : "NORA · LOCAL"}</Text><Text style={styles.chatText}>{item.text}</Text></View></View>}
       />
-      <View style={styles.chatInputRow}><TextInput style={styles.chatInput} value={value} onChangeText={onChange} placeholder="Try: turn on the lights" placeholderTextColor="#9AA6AE" onSubmitEditing={onSend} /><Pressable style={styles.sendButton} onPress={onSend}><Ionicons name="arrow-up" size={18} color="white" /></Pressable></View>
-      <Text style={styles.formHint}>Voice recognition and AI provider are not connected.</Text>
+      <View style={styles.chatInputRow}><Pressable style={[styles.voiceButton, isListening && styles.voiceButtonActive]} onPress={onMic} accessibilityRole="button" accessibilityLabel={isListening ? "Stop listening" : "Start voice command"} accessibilityState={{ selected: isListening }}><Ionicons name={isListening ? "stop" : "mic"} size={17} color={isListening ? "white" : "#087F95"} /></Pressable><TextInput style={styles.chatInput} value={value} onChangeText={onChange} placeholder="Say: switch on the living room light" placeholderTextColor="#9AA6AE" onSubmitEditing={onSend} /><Pressable style={styles.sendButton} onPress={onSend}><Ionicons name="arrow-up" size={18} color="white" /></Pressable></View>
+      <Text style={styles.formHint}>{voiceStatus} · no AI service; audio and transcripts are not sent to the NEXORA backend.</Text>
     </View>
   </>;
 }
@@ -488,6 +678,7 @@ const styles = StyleSheet.create({
   deviceGlyphOn: { backgroundColor: "#E7F8FA" },
   onlineDot: { width: 7, height: 7, borderRadius: 4 },
   tileActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  onlineText: { color: "#73818D", fontSize: 7 },
   deviceName: { marginTop: 12, color: colors.ink, fontSize: 11, fontWeight: "700" },
   deviceRoom: { marginTop: 3, color: colors.mutedInk, fontSize: 8 },
   deviceState: { marginTop: 11, color: "#73818D", fontSize: 8 },
@@ -539,9 +730,12 @@ const styles = StyleSheet.create({
   chatLabel: { color: "#8B98A2", fontSize: 7, fontWeight: "700", letterSpacing: 0.7 },
   chatText: { marginTop: 4, color: "#344453", fontSize: 9, lineHeight: 14 },
   chatInputRow: { flexDirection: "row", gap: 7, alignItems: "center", marginTop: 9, padding: 6, borderWidth: 1, borderColor: "#DCE6EC", borderRadius: 11, backgroundColor: "#FCFDFE" },
+  voiceButton: { width: 33, height: 33, borderRadius: 10, backgroundColor: "#EAF8FA", alignItems: "center", justifyContent: "center" },
+  voiceButtonActive: { backgroundColor: "#D64545" },
   chatInput: { flex: 1, minHeight: 35, paddingHorizontal: 8, color: colors.ink, fontSize: 9 },
   sendButton: { width: 33, height: 33, borderRadius: 10, backgroundColor: "#168AA2", alignItems: "center", justifyContent: "center" },
   formHint: { marginTop: 8, color: "#87939E", fontSize: 8 },
+  simulatorOption: { marginTop: 8, flexDirection: "row", alignItems: "center", gap: 7 },
   settingItem: { minHeight: 53, flexDirection: "row", alignItems: "center", gap: 9, borderTopWidth: 1, borderTopColor: "#EDF1F4" },
   settingStatus: { textTransform: "capitalize", fontSize: 8, paddingHorizontal: 7, paddingVertical: 4, borderRadius: 6 },
   settingStatusOn: { color: "#218353", backgroundColor: "#EEF9F2" },

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { NexoraApi, websocketUrl } from "./api";
 import { createDemoDevices, tickSimulatedSensors, toggleSimulatedDevice } from "./simulator";
+import { matchVoiceTargets, parseVoiceCommand } from "./voice";
 
 describe("shared API contract", () => {
   it("uses only existing device endpoints", async () => {
@@ -60,5 +61,39 @@ describe("local simulator", () => {
     expect(toggled.event.device_id).toMatch(/^sim-/);
     expect(tick.devices[0].sensor_readings[0].reading).not.toBe(21.4);
     expect(tick.events[0].type).toBe("simulator_sensor");
+  });
+
+  describe("local voice command matching", () => {
+    it("parses a spoken light command and identifies a named room", () => {
+      const command = parseVoiceCommand("NORA, can you please switch on the living room light?");
+      expect(command).toEqual({
+        action: "on",
+        kind: "light",
+        target: "living room",
+        all: false,
+      });
+      const targets = matchVoiceTargets(
+        [
+          { device_type: "smart_light", name: "Ambient light", room: "Living room" },
+          { device_type: "smart_light", name: "Bedside lamp", room: "Bedroom" },
+        ],
+        command!,
+      );
+      expect(targets.map((device) => device.room)).toEqual(["Living room"]);
+    });
+
+    it("parses plural fan and curtain actions without accepting unsupported commands", () => {
+      expect(parseVoiceCommand("turn off all fans")).toMatchObject({
+        action: "off",
+        kind: "fan",
+        all: true,
+      });
+      expect(parseVoiceCommand("open the bedroom curtains")).toMatchObject({
+        action: "open",
+        kind: "curtain",
+        target: "bedroom",
+      });
+      expect(parseVoiceCommand("set the living room light to 50 percent")).toBeNull();
+    });
   });
 });

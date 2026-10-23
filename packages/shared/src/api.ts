@@ -1,4 +1,10 @@
-import type { Device, DeviceCommand, DeviceCreate, DeviceUpdate } from "./types";
+import type {
+  Device,
+  DeviceCommand,
+  DeviceCommandAccepted,
+  DeviceCreate,
+  DeviceUpdate,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -13,7 +19,7 @@ export class ApiError extends Error {
 export class NexoraApi {
   constructor(
     private readonly baseUrl: string,
-    private readonly fetcher: typeof fetch = fetch,
+    private readonly fetcher?: typeof fetch,
   ) {}
 
   async health(): Promise<{ status: string; service: string; database: string }> {
@@ -44,8 +50,8 @@ export class NexoraApi {
     });
   }
 
-  async sendCommand(id: string, command: DeviceCommand): Promise<void> {
-    await this.request(`/devices/${encodeURIComponent(id)}/command`, {
+  async sendCommand(id: string, command: DeviceCommand): Promise<DeviceCommandAccepted> {
+    return this.request(`/devices/${encodeURIComponent(id)}/command`, {
       method: "POST",
       body: JSON.stringify(command),
     });
@@ -54,7 +60,7 @@ export class NexoraApi {
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
     try {
-      response = await this.fetcher(`${this.baseUrl}${path}`, {
+      response = await (this.fetcher ?? fetch)(`${this.baseUrl}${path}`, {
         ...init,
         headers: {
           ...(init.body ? { "Content-Type": "application/json" } : {}),

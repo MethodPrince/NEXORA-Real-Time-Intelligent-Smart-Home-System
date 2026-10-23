@@ -16,6 +16,9 @@ from app.api.schemas.devices import DeviceRead
 from app.api.schemas.devices import DeviceUpdate
 from app.db.dependencies import get_db_session
 from app.db.models import Device
+from app.services.simulator import device_kind
+from app.services.simulator import encode_state
+from app.services.simulator import initial_state
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,18 @@ def create_device(
     device_data: DeviceCreate,
     session: Session = Depends(get_db_session),
 ) -> Device:
-    device = Device(**device_data.model_dump())
+    values = device_data.model_dump(exclude={"simulated"})
+    if device_data.simulated:
+        kind = device_kind(device_data.device_type)
+        if kind is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Simulated devices must be a light, fan, or curtain",
+            )
+        values["status"] = encode_state(initial_state(kind))
+        if "online" not in device_data.model_fields_set:
+            values["online"] = True
+    device = Device(**values)
     try:
         session.add(device)
         session.commit()

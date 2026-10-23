@@ -6,6 +6,15 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow NEXORA to use the microphone when you tap the voice command button.",
+          "speechRecognitionPermission": "Allow NEXORA to transcribe voice commands when you tap the voice command button."
+        }
+      ]
+    ],
     "android": {
       "package": "com.nexora.smarthome",
       "edgeToEdgeEnabled": true

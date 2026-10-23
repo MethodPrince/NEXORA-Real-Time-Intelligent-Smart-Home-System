@@ -218,6 +218,8 @@ h1, h2 { font-family: Manrope, "DM Sans", sans-serif; color: var(--ink); }
 .page-heading .eyebrow { display: block; }
 .page-heading h1 { margin-top: 7px; }
 .page-heading p { max-width: 600px; line-height: 1.6; }
+.simulator-option { display: flex; align-items: center; gap: 8px; color: #425466; font-size: 11px; }
+.simulator-option input { width: 15px; height: 15px; accent-color: #07849a; }
 .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
 .search-field { flex: 1; max-width: 380px; height: 39px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border: 1px solid #dde6ec; border-radius: 10px; background: white; color: #87939e; }
 .search-field input { flex: 1; min-width: 0; border: 0; outline: none; color: var(--ink); background: transparent; font-size: 10px; }
@@ -287,6 +289,8 @@ h1, h2 { font-family: Manrope, "DM Sans", sans-serif; color: var(--ink); }
 .chat-input input { flex: 1; min-width: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 10px; }
 .chat-input input::placeholder { color: #9aa6ae; }
 .mic-button { width: 32px; height: 32px; border: 0; background: #edf7fa; color: #16879d; }
+.mic-button.listening { color: white; background: #d64545; animation: mic-pulse 1.2s infinite; }
+@keyframes mic-pulse { 50% { box-shadow: 0 0 0 5px rgba(214,69,69,.15); } }
 .chat-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; color: #87949f; font-size: 8px; }
 .chat-foot span { display: flex; align-items: center; gap: 5px; }
 .settings-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 15px; }
