@@ -24,8 +24,10 @@ const fillerWords = new Set([
   "in",
   "me",
   "method",
+  "nexora",
   "my",
   "nora",
+  "nona",
   "off",
   "on",
   "please",
@@ -38,7 +40,12 @@ const fillerWords = new Set([
 ]);
 
 export function isAssistantGreeting(text: string): boolean {
-  return /^(?:hey|hello|hi)\s+method[.!?]*$/i.test(text.trim());
+  return /^(?:hey|hello|hi)\s+(?:method|nona|nora|nexora)[.,!?]*$/i.test(text.trim());
+}
+
+export function extractAssistantWakeCommand(text: string): string | null {
+  const match = text.match(/\b(?:hey|hello|hi)\s+(?:method|nona|nora|nexora)\b[\s,.:;!?-]*/i);
+  return match ? text.slice((match.index ?? 0) + match[0].length).trim() : null;
 }
 
 export function parseVoiceCommand(text: string): VoiceCommand | null {

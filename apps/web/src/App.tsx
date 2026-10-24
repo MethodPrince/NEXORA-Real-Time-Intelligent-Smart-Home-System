@@ -32,6 +32,7 @@ import {
   createDemoDevices,
   type AutomationRule,
   isDeviceEvent,
+  extractAssistantWakeCommand,
   isAssistantGreeting,
   matchVoiceTargets,
   NexoraApi,
@@ -72,7 +73,7 @@ interface SpeechRecognitionLike {
   continuous: boolean;
   interimResults: boolean;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: Event) => void) | null;
+  onerror: ((event: Event & { error?: string }) => void) | null;
   onend: (() => void) | null;
   start(): void;
   stop(): void;
@@ -175,12 +176,17 @@ function App() {
   const [assistantMessages, setAssistantMessages] = useState([
     {
       from: "nora",
-      text: "Hi, I’m NORA. You can call me Method. Tap the microphone and say “Hey Method, turn on the living room light.”",
+      text: "Hi, I’m NORA. You can call me Method, Nona, or Nexora. Just say “Hey Method, turn on the living room light.”",
     },
   ]);
-  const [voiceStatus, setVoiceStatus] = useState("Tap the microphone, then say “Hey Method” or “Hello Method” and your command.");
+  const [voiceStatus, setVoiceStatus] = useState("Say “Hey Method,” “Hey Nona,” or “Hey Nexora” followed by a command from any page.");
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const wakeListeningRef = useRef(false);
+  const wakeCommandTimerRef = useRef<number | null>(null);
+  const wakeRestartTimerRef = useRef<number | null>(null);
+  const processNoraMessageRef = useRef(processNoraMessage);
+  processNoraMessageRef.current = processNoraMessage;
   const tickRef = useRef(0);
   const apiDevices = useMemo(
     () => devices.filter((device) => device.name.toLowerCase().includes(query.toLowerCase())),
@@ -582,45 +588,150 @@ function App() {
   }
 
   function startVoiceInput() {
-    if (isListening) {
+    if (wakeListeningRef.current) {
+      wakeListeningRef.current = false;
       recognitionRef.current?.stop();
+      if (wakeCommandTimerRef.current !== null) {
+        window.clearTimeout(wakeCommandTimerRef.current);
+        wakeCommandTimerRef.current = null;
+      }
+      setIsListening(false);
+      setVoiceStatus("Wake-word listening is paused.");
       return;
+    }
+
+    wakeListeningRef.current = true;
+    startWakeWordListener();
+  }
+
+  function startWakeWordListener() {
+    if (!wakeListeningRef.current || document.visibilityState !== "visible") return;
+    if (wakeRestartTimerRef.current !== null) {
+      window.clearTimeout(wakeRestartTimerRef.current);
+      wakeRestartTimerRef.current = null;
     }
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!Recognition) {
-      setVoiceStatus("Voice input isn’t supported by this browser. Try Chrome or type your command.");
+      wakeListeningRef.current = false;
+      const message = "Voice input isn’t supported by this browser. Try Chrome or type your command.";
+      setVoiceStatus(message);
+      setToast(message);
       return;
     }
 
     const recognition = new Recognition();
     recognition.lang = "en-US";
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.onresult = (event) => {
-      const result = event.results[event.resultIndex];
-      const transcript = result?.[0]?.transcript?.trim();
-      if (!transcript) return;
-      setAssistantText(transcript);
-      if (result.isFinal) {
-        setVoiceStatus("Command received.");
-        void processNoraMessage(transcript);
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (!result?.isFinal) continue;
+        const transcript = result[0]?.transcript?.trim();
+        if (!transcript) {
+          const message = "I didn’t catch that. Try speaking more clearly or a little louder, then say “Hey Method,” “Hey Nona,” or “Hey Nexora.”";
+          setVoiceStatus(message);
+          setToast(message);
+          continue;
+        }
+
+        const wakeCommand = extractAssistantWakeCommand(transcript);
+        if (wakeCommand !== null) {
+          if (wakeCommandTimerRef.current !== null) {
+            window.clearTimeout(wakeCommandTimerRef.current);
+            wakeCommandTimerRef.current = null;
+          }
+          if (wakeCommand) {
+            setAssistantText(wakeCommand);
+            setVoiceStatus("Command received.");
+            void processNoraMessageRef.current(wakeCommand);
+          } else {
+            setVoiceStatus("I’m listening. What would you like me to do?");
+            wakeCommandTimerRef.current = window.setTimeout(() => {
+              wakeCommandTimerRef.current = null;
+              setVoiceStatus("Wake word listening. Say “Hey Method,” “Hey Nona,” or “Hey Nexora” to begin.");
+            }, 8_000);
+          }
+          continue;
+        }
+
+        if (wakeCommandTimerRef.current !== null) {
+          window.clearTimeout(wakeCommandTimerRef.current);
+          wakeCommandTimerRef.current = null;
+          setAssistantText(transcript);
+          setVoiceStatus("Command received.");
+          void processNoraMessageRef.current(transcript);
+        } else {
+          const message = `I heard “${transcript},” but didn’t catch a wake phrase. Try speaking clearly or a little louder, then say “Hey Method,” “Hey Nona,” or “Hey Nexora.”`;
+          setVoiceStatus(message);
+          setToast(message);
+        }
       }
     };
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        wakeListeningRef.current = false;
+        const message = "Microphone permission is required. Allow microphone access in your browser settings, then reload NEXORA.";
+        setVoiceStatus(message);
+        setToast(message);
+      } else if (event.error === "no-speech") {
+        const message = "I didn’t hear anything. Try speaking clearly or a little louder, then say “Hey Method,” “Hey Nona,” or “Hey Nexora.”";
+        setVoiceStatus(message);
+        setToast(message);
+      } else {
+        setVoiceStatus("Wake-word listening interrupted. Reconnecting…");
+      }
       setIsListening(false);
-      setVoiceStatus("Voice input failed or microphone permission was denied. You can type a command instead.");
     };
-    recognition.onend = () => setIsListening(false);
+    recognition.onend = () => {
+      setIsListening(false);
+      if (wakeListeningRef.current && document.visibilityState === "visible") {
+        wakeRestartTimerRef.current = window.setTimeout(() => {
+          wakeRestartTimerRef.current = null;
+          startWakeWordListener();
+        }, 300);
+      }
+    };
     recognitionRef.current = recognition;
-    setVoiceStatus("Listening…");
     setIsListening(true);
     try {
       recognition.start();
     } catch {
       setIsListening(false);
-      setVoiceStatus("Couldn’t start voice input. Try again or type your command.");
+      wakeListeningRef.current = false;
+      setVoiceStatus("Couldn’t start the microphone. Allow access, then press the microphone to try again.");
     }
   }
+
+  useEffect(() => {
+    wakeListeningRef.current = true;
+    startWakeWordListener();
+    const resumeWhenVisible = () => {
+      if (document.visibilityState === "visible" && wakeListeningRef.current) {
+        wakeRestartTimerRef.current = window.setTimeout(startWakeWordListener, 300);
+      } else if (document.visibilityState !== "visible") {
+        recognitionRef.current?.stop();
+        if (wakeRestartTimerRef.current !== null) {
+          window.clearTimeout(wakeRestartTimerRef.current);
+          wakeRestartTimerRef.current = null;
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", resumeWhenVisible);
+    return () => {
+      wakeListeningRef.current = false;
+      recognitionRef.current?.stop();
+      document.removeEventListener("visibilitychange", resumeWhenVisible);
+      if (wakeCommandTimerRef.current !== null) {
+        window.clearTimeout(wakeCommandTimerRef.current);
+        wakeCommandTimerRef.current = null;
+      }
+      if (wakeRestartTimerRef.current !== null) {
+        window.clearTimeout(wakeRestartTimerRef.current);
+        wakeRestartTimerRef.current = null;
+      }
+    };
+  }, [section]);
 
   const pageTitle = navItems.find((item) => item.id === section)?.label ?? "Overview";
 
@@ -1020,12 +1131,12 @@ function NoraPage(props: {
   isListening: boolean;
 }) {
   return <div className="nora-page">
-    <section className="nora-hero"><div className="nora-orb large"><span /><i /><b /></div><span className="eyebrow">NEXORA ORCHESTRATION & RESPONSE ASSISTANT</span><h1>Meet <em>NORA</em></h1><p>Your home’s intelligent companion. Call me Method: say “Hey Method” or “Hello Method” before your command.</p><span className="preview-label">INTERFACE PREVIEW</span></section>
+    <section className="nora-hero"><div className="nora-orb large"><span /><i /><b /></div><span className="eyebrow">NEXORA ORCHESTRATION & RESPONSE ASSISTANT</span><h1>Meet <em>NORA</em></h1><p>Your home’s intelligent companion. NEXORA listens while this page is open. Say “Hey Method,” “Hey Nona,” or “Hey Nexora” followed by your command from any page.</p><span className="preview-label">INTERFACE PREVIEW</span></section>
     <section className="panel nora-chat">
       <div className="panel-heading"><div><span className="eyebrow">CONVERSATION</span><h2>Home assistant</h2></div><span className="status-pill positive"><span className="tiny-dot" />Local voice controls</span></div>
       <div className="chat-log">{props.messages.map((message, index) => <div className={`chat-message ${message.from === "you" ? "from-user" : ""}`} key={`${index}-${message.from}`}><span className="chat-avatar">{message.from === "you" ? "P" : <Sparkles size={15} />}</span><div><small>{message.from === "you" ? "YOU" : "NORA · LOCAL"}</small><p>{message.text}</p></div></div>)}</div>
-      <form className="chat-input" onSubmit={props.onSubmit}><button type="button" className={`icon-button mic-button ${props.isListening ? "listening" : ""}`} onClick={props.onMic} aria-label={props.isListening ? "Stop listening" : "Start voice command"} aria-pressed={props.isListening}><Mic size={18} /></button><input value={props.text} onChange={(event) => props.onText(event.target.value)} placeholder="Hey Method, turn on the living room light" aria-label="Message NORA" /><button className="button primary" type="submit">Send <ArrowUpRight size={15} /></button></form>
-      <div className="chat-foot"><span><LockKeyhole size={13} /> {props.voiceStatus} · no AI service; audio and transcripts are not sent to the NEXORA backend</span><span>Try: “Hey Method, turn on the living room light”</span></div>
+      <form className="chat-input" onSubmit={props.onSubmit}><button type="button" className={`icon-button mic-button ${props.isListening ? "listening" : ""}`} onClick={props.onMic} aria-label={props.isListening ? "Pause wake-word listening" : "Start wake-word listening"} aria-pressed={props.isListening}><Mic size={18} /></button><input value={props.text} onChange={(event) => props.onText(event.target.value)} placeholder="Hey Method, turn on the living room light" aria-label="Message NORA" /><button className="button primary" type="submit">Send <ArrowUpRight size={15} /></button></form>
+      <div className="chat-foot"><span><LockKeyhole size={13} /> {props.voiceStatus} · audio and transcripts are not sent to the NEXORA backend; listening stops when you hide the page</span><span>Try: “Hey Nona, turn on the living room light”</span></div>
     </section>
   </div>;
 }

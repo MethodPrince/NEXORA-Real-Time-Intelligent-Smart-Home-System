@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -27,6 +27,7 @@ import {
   type AutomationUpdate,
   colors,
   createDemoDevices,
+  extractAssistantWakeCommand,
   isDeviceEvent,
   isAssistantGreeting,
   matchVoiceTargets,
@@ -120,10 +121,14 @@ function App() {
   const [deviceType, setDeviceType] = useState("smart_light");
   const [simulatedDevice, setSimulatedDevice] = useState(false);
   const [noraInput, setNoraInput] = useState("");
-  const [voiceStatus, setVoiceStatus] = useState("Tap the microphone, then say “Hey Method” or “Hello Method” and your command.");
+  const [voiceStatus, setVoiceStatus] = useState("Say “Hey Method,” “Hey Nona,” or “Hey Nexora” followed by a command from any page.");
   const [isListening, setIsListening] = useState(false);
+  const wakeListeningRef = useRef(false);
+  const wakeCommandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sendNoraRef = useRef(sendNora);
+  sendNoraRef.current = sendNora;
   const [noraMessages, setNoraMessages] = useState([
-    { from: "nora", text: "Hi, I’m NORA. You can call me Method. Tap the microphone and say “Hey Method, turn on the living room light.”" },
+    { from: "nora", text: "Hi, I’m NORA. You can call me Method, Nona, or Nexora. Just say “Hey Method, turn on the living room light.”" },
   ]);
   const [noticeVisible, setNoticeVisible] = useState(false);
   const [toast, setToast] = useState("");
@@ -139,21 +144,66 @@ function App() {
     (device) => device.id === automationDeviceId,
   ) ?? automationDevices[0];
 
-  useSpeechRecognitionEvent("start", () => setIsListening(true));
-  useSpeechRecognitionEvent("end", () => setIsListening(false));
+  useSpeechRecognitionEvent("start", () => {
+    setIsListening(true);
+    setVoiceStatus("Wake-word listening. Say “Hey Method,” “Hey Nona,” or “Hey Nexora” to begin.");
+  });
+  useSpeechRecognitionEvent("end", () => {
+    setIsListening(false);
+    if (wakeListeningRef.current) {
+      setTimeout(() => void startWakeWordListener(), 300);
+    }
+  });
   useSpeechRecognitionEvent("result", (event) => {
     const transcript = event.results[0]?.transcript.trim();
-    if (!transcript) return;
-    setNoraInput(transcript);
-    if (event.isFinal) {
+    if (!event.isFinal) return;
+    if (!transcript) {
+      const message = "I didn’t catch that. Try speaking more clearly or a little louder, then say “Hey Method,” “Hey Nona,” or “Hey Nexora.”";
+      setVoiceStatus(message);
+      setToast(message);
+      return;
+    }
+
+    const wakeCommand = extractAssistantWakeCommand(transcript);
+    if (wakeCommand !== null) {
+      if (wakeCommandTimerRef.current) {
+        clearTimeout(wakeCommandTimerRef.current);
+        wakeCommandTimerRef.current = null;
+      }
+      if (wakeCommand) {
+        setNoraInput(wakeCommand);
+        setVoiceStatus("Command received.");
+        void sendNoraRef.current(wakeCommand);
+      } else {
+        setVoiceStatus("I’m listening. What would you like me to do?");
+        wakeCommandTimerRef.current = setTimeout(() => {
+          wakeCommandTimerRef.current = null;
+          setVoiceStatus("Wake-word listening. Say “Hey Method,” “Hey Nona,” or “Hey Nexora” to begin.");
+        }, 8_000);
+      }
+      return;
+    }
+
+    if (wakeCommandTimerRef.current) {
+      clearTimeout(wakeCommandTimerRef.current);
+      wakeCommandTimerRef.current = null;
+      setNoraInput(transcript);
       setVoiceStatus("Command received.");
-      void sendNora(transcript);
+      void sendNoraRef.current(transcript);
+    } else {
+      const message = `I heard “${transcript},” but didn’t catch a wake phrase. Try speaking clearly or a little louder, then say “Hey Method,” “Hey Nona,” or “Hey Nexora.”`;
+      setVoiceStatus(message);
+      setToast(message);
     }
   });
   useSpeechRecognitionEvent("error", (event) => {
     setIsListening(false);
-    const message = event.error === "not-allowed"
+    const permissionDenied = event.error === "not-allowed";
+    if (permissionDenied) wakeListeningRef.current = false;
+    const message = permissionDenied
       ? "Microphone or speech permission was denied."
+      : event.error === "no-speech"
+        ? "I didn’t hear anything. Try speaking clearly or a little louder, then say “Hey Method,” “Hey Nona,” or “Hey Nexora.”"
       : `Voice input failed: ${event.message}`;
     setVoiceStatus(message);
     setToast(message);
@@ -510,12 +560,10 @@ function App() {
     Speech.speak(message, { language: "en-US" });
   }
 
-  async function startVoiceInput() {
-    if (isListening) {
-      ExpoSpeechRecognitionModule.stop();
-      return;
-    }
+  async function startWakeWordListener() {
+    if (!wakeListeningRef.current) return;
     if (!ExpoSpeechRecognitionModule.isRecognitionAvailable()) {
+      wakeListeningRef.current = false;
       const message = "Speech recognition is unavailable on this device. You can type a command instead.";
       setVoiceStatus(message);
       setToast(message);
@@ -524,23 +572,56 @@ function App() {
     try {
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!permission.granted) {
-        const message = "Microphone and speech-recognition permission are required for voice commands.";
+        wakeListeningRef.current = false;
+        const message = "Microphone and speech-recognition permission are required for wake-word voice commands.";
         setVoiceStatus(message);
         setToast(message);
         return;
       }
-      setVoiceStatus("Listening…");
+      if (!wakeListeningRef.current) return;
+      setVoiceStatus("Starting wake-word listening…");
       ExpoSpeechRecognitionModule.start({
         lang: "en-US",
         interimResults: true,
-        continuous: false,
+        continuous: true,
       });
     } catch {
-      const message = "Couldn’t start voice input. Try again or type your command.";
+      wakeListeningRef.current = false;
+      const message = "Couldn’t start voice input. Allow microphone access, then reopen the assistant.";
       setVoiceStatus(message);
       setToast(message);
     }
   }
+
+  async function startVoiceInput() {
+    if (wakeListeningRef.current) {
+      wakeListeningRef.current = false;
+      ExpoSpeechRecognitionModule.stop();
+      if (wakeCommandTimerRef.current) {
+        clearTimeout(wakeCommandTimerRef.current);
+        wakeCommandTimerRef.current = null;
+      }
+      setIsListening(false);
+      setVoiceStatus("Wake-word listening is paused.");
+      return;
+    }
+    wakeListeningRef.current = true;
+    await startWakeWordListener();
+  }
+
+  useEffect(() => {
+    wakeListeningRef.current = true;
+    void startWakeWordListener();
+    return () => {
+      const shouldStop = wakeListeningRef.current;
+      wakeListeningRef.current = false;
+      if (shouldStop) ExpoSpeechRecognitionModule.stop();
+      if (wakeCommandTimerRef.current) {
+        clearTimeout(wakeCommandTimerRef.current);
+        wakeCommandTimerRef.current = null;
+      }
+    };
+  }, [section]);
 
   const currentPage = navigation.find((item) => item.id === section)?.label ?? "Home";
   return (
@@ -779,7 +860,7 @@ function NoraScreen({ messages, value, onChange, onSend, onMic, voiceStatus, isL
   isListening: boolean;
 }) {
   return <>
-    <View style={styles.noraHero}><View style={styles.noraHalo}><Ionicons name="sparkles" size={28} color="#F5C06A" /></View><Text style={styles.eyebrowLight}>NEXORA HOME COMPANION</Text><Text style={styles.noraHeading}>Hello, I’m NORA.</Text><Text style={styles.heroText}>You can call me Method. Tap the microphone and say “Hey Method” or “Hello Method” with your command.</Text></View>
+    <View style={styles.noraHero}><View style={styles.noraHalo}><Ionicons name="sparkles" size={28} color="#F5C06A" /></View><Text style={styles.eyebrowLight}>NEXORA HOME COMPANION</Text><Text style={styles.noraHeading}>Hello, I’m NORA.</Text><Text style={styles.heroText}>NEXORA listens while the app is open. Say “Hey Method,” “Hey Nona,” or “Hey Nexora” followed by your command from any page.</Text></View>
     <View style={[styles.panel, { marginTop: 14 }]}>
       <FlatList
         data={messages}
@@ -787,7 +868,7 @@ function NoraScreen({ messages, value, onChange, onSend, onMic, voiceStatus, isL
         scrollEnabled={false}
         renderItem={({ item }) => <View style={[styles.chatMessage, item.from === "you" && styles.chatUser]}><View style={styles.chatAvatar}><Text style={styles.chatAvatarText}>{item.from === "you" ? "P" : "N"}</Text></View><View style={styles.chatBubble}><Text style={styles.chatLabel}>{item.from === "you" ? "YOU" : "NORA · LOCAL"}</Text><Text style={styles.chatText}>{item.text}</Text></View></View>}
       />
-      <View style={styles.chatInputRow}><Pressable style={[styles.voiceButton, isListening && styles.voiceButtonActive]} onPress={onMic} accessibilityRole="button" accessibilityLabel={isListening ? "Stop listening" : "Start voice command"} accessibilityState={{ selected: isListening }}><Ionicons name={isListening ? "stop" : "mic"} size={17} color={isListening ? "white" : colors.cyan} /></Pressable><TextInput style={styles.chatInput} value={value} onChangeText={onChange} placeholder="Hey Method, turn on the living room light" placeholderTextColor="#9AA6AE" onSubmitEditing={onSend} /><Pressable style={styles.sendButton} onPress={onSend}><Ionicons name="arrow-up" size={18} color="#21170C" /></Pressable></View>
+      <View style={styles.chatInputRow}><Pressable style={[styles.voiceButton, isListening && styles.voiceButtonActive]} onPress={onMic} accessibilityRole="button" accessibilityLabel={isListening ? "Pause wake-word listening" : "Start wake-word listening"} accessibilityState={{ selected: isListening }}><Ionicons name={isListening ? "stop" : "mic"} size={17} color={isListening ? "white" : colors.cyan} /></Pressable><TextInput style={styles.chatInput} value={value} onChangeText={onChange} placeholder="Hey Method, turn on the living room light" placeholderTextColor="#9AA6AE" onSubmitEditing={onSend} /><Pressable style={styles.sendButton} onPress={onSend}><Ionicons name="arrow-up" size={18} color="#21170C" /></Pressable></View>
       <Text style={styles.formHint}>{voiceStatus} · no AI service; audio and transcripts are not sent to the NEXORA backend.</Text>
     </View>
   </>;

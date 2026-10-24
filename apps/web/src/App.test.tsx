@@ -4,11 +4,12 @@ import App from "./App";
 
 class MockSpeechRecognition {
   static instances: MockSpeechRecognition[] = [];
+  continuous = false;
   onresult: ((event: {
     resultIndex: number;
     results: Array<{ 0: { transcript: string }; isFinal: boolean }>;
   }) => void) | null = null;
-  onerror: (() => void) | null = null;
+  onerror: ((event: { error: string }) => void) | null = null;
   onend: (() => void) | null = null;
   start = vi.fn();
   stop = vi.fn();
@@ -146,19 +147,63 @@ describe("NEXORA dashboard", () => {
     expect(screen.getAllByText(/Powered off · local demo/).length).toBeGreaterThan(0);
   });
 
-  it("uses tap-to-talk voice input to issue a local device command", async () => {
+  it("starts wake-word listening on the home page and runs a spoken command", async () => {
     vi.stubGlobal("SpeechRecognition", MockSpeechRecognition);
     render(<App />);
-    fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
-    fireEvent.click(screen.getByRole("button", { name: "Start voice command" }));
 
     const recognition = MockSpeechRecognition.instances[0];
     expect(recognition.start).toHaveBeenCalledOnce();
-    recognition.onresult?.({
-      resultIndex: 0,
-      results: [{ 0: { transcript: "Hey Method, switch on the living room light" }, isFinal: true }],
+    expect(recognition.continuous).toBe(true);
+    act(() => {
+      recognition.onresult?.({
+        resultIndex: 0,
+        results: [{ 0: { transcript: "Hey Nona, switch off the living room light" }, isFinal: true }],
+      });
     });
 
+    fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
+    expect(await screen.findByText(/Ambient light turned off in the local demo/)).toBeInTheDocument();
+  });
+
+  it("reports when speech is not recognized or no speech is heard", () => {
+    vi.stubGlobal("SpeechRecognition", MockSpeechRecognition);
+    render(<App />);
+
+    const recognition = MockSpeechRecognition.instances[0];
+    act(() => {
+      recognition.onresult?.({
+        resultIndex: 0,
+        results: [{ 0: { transcript: "turn on the living room light" }, isFinal: true }],
+      });
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(/didn’t catch a wake phrase/i);
+
+    act(() => {
+      recognition.onerror?.({ error: "no-speech" });
+    });
+    expect(screen.getByRole("status")).toHaveTextContent(/I didn’t hear anything/i);
+  });
+
+  it("waits for a command after hearing a wake phrase by itself", async () => {
+    vi.stubGlobal("SpeechRecognition", MockSpeechRecognition);
+    render(<App />);
+    fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
+
+    const recognition = MockSpeechRecognition.instances[0];
+    act(() => {
+      recognition.onresult?.({
+        resultIndex: 0,
+        results: [{ 0: { transcript: "Hey Nexora" }, isFinal: true }],
+      });
+    });
+    expect(screen.getByText(/I’m listening. What would you like me to do/)).toBeInTheDocument();
+
+    act(() => {
+      recognition.onresult?.({
+        resultIndex: 0,
+        results: [{ 0: { transcript: "switch on the living room light" }, isFinal: true }],
+      });
+    });
     expect(await screen.findByText(/Ambient light turned on in the local demo/)).toBeInTheDocument();
   });
 
@@ -178,9 +223,8 @@ describe("NEXORA dashboard", () => {
   it("offers typed commands when browser speech recognition is unavailable", async () => {
     render(<App />);
     fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
-    fireEvent.click(screen.getByRole("button", { name: "Start voice command" }));
 
-    expect(await screen.findByText(/isn’t supported by this browser/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/isn’t supported by this browser/i)).length).toBeGreaterThan(0);
     expect(screen.getByRole("textbox", { name: "Message NORA" })).toBeInTheDocument();
   });
 

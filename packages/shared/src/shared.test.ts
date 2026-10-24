@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { NexoraApi, websocketUrl } from "./api";
 import { createDemoDevices, tickSimulatedSensors, toggleSimulatedDevice } from "./simulator";
-import { isAssistantGreeting, matchVoiceTargets, parseVoiceCommand } from "./voice";
+import {
+  extractAssistantWakeCommand,
+  isAssistantGreeting,
+  matchVoiceTargets,
+  parseVoiceCommand,
+} from "./voice";
 
 describe("shared API contract", () => {
   it("uses only existing device endpoints", async () => {
@@ -79,7 +84,13 @@ describe("local simulator", () => {
     it("recognizes Method greetings and voice commands addressed to Method", () => {
       expect(isAssistantGreeting("Hey Method")).toBe(true);
       expect(isAssistantGreeting("Hello Method!")).toBe(true);
-      expect(isAssistantGreeting("Hey NORA")).toBe(false);
+      expect(isAssistantGreeting("Hey NORA")).toBe(true);
+      expect(isAssistantGreeting("Hey Nona")).toBe(true);
+      expect(isAssistantGreeting("Hey Nexora")).toBe(true);
+      expect(extractAssistantWakeCommand("Hey Method, turn on the living room light"))
+        .toBe("turn on the living room light");
+      expect(extractAssistantWakeCommand("Hey Nona")).toBe("");
+      expect(extractAssistantWakeCommand("turn on the living room light")).toBeNull();
       expect(parseVoiceCommand("Hey Method, turn on the living room light")).toMatchObject({
         action: "on",
         kind: "light",
