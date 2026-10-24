@@ -1,5 +1,5 @@
 # NEXORA — Python Backend
-
+NEXORA stands for Next-Generation Intelligent Home Automation. It’s a smart-home system that connects devices, sensors, automation, and an AI assistant called NORA to make controlling and monitoring a home smarter and easier
 The NEXORA backend uses FastAPI, environment-based configuration, an HTTP
 health endpoint, a real-time WebSocket system, and PostgreSQL persistence
 managed through SQLAlchemy and Alembic.
