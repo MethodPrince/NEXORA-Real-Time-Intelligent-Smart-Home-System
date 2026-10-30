@@ -125,10 +125,15 @@ The `.env` file is ignored by Git. Values use the `NEXORA_` prefix, for example
 `NEXORA_LOG_LEVEL=DEBUG`; `DATABASE_URL` is read directly without that prefix.
 Do not put passwords, keys, or other secrets in source code.
 
-## Web dashboard and Android app
+## Desktop web dashboard and mobile apps
 
-The client projects are npm workspaces. From the repository root, install
-their dependencies:
+The web dashboard and React Native + Expo mobile app share the same FastAPI
+backend and shared client package. The desktop client is the web dashboard,
+which runs in a desktop browser and can be built as static web assets. Android
+is the current native build focus; iOS remains in the shared mobile codebase,
+but its device-build workflow is deferred. Native modules such as speech
+recognition are included in development builds. From the repository root,
+install client dependencies:
 
 ```powershell
 npm.cmd install
@@ -147,22 +152,99 @@ npm.cmd run dev:web
 Open the local URL printed by Vite (normally <http://localhost:5173>). For a
 remote backend, copy [apps/web/.env.example](./apps/web/.env.example) to
 `apps/web/.env.local` and set `VITE_API_URL` to its origin; use HTTPS for
-deployed services.
-
-Start the Expo app on an Android emulator with Android Studio installed:
+deployed services. Build the dashboard for desktop browsers with:
 
 ```powershell
-npm.cmd run dev:android
+npm.cmd run build:web
 ```
 
-The default Android emulator API URL is `http://10.0.2.2:8000`, which points
-back to the development computer. For Expo Go on a physical Android phone,
-copy [apps/mobile/.env.example](./apps/mobile/.env.example) to
-`apps/mobile/.env.local`, replace the URL with the computer's LAN IP
-(for example `http://192.168.1.20:8000`), and run the Expo start script using
-LAN mode. The computer and phone must be on the same network, the firewall
-must allow the API port, and FastAPI must bind to the LAN interface
-(`--host 0.0.0.0`). Use a trusted HTTPS endpoint outside local development.
+The generated site is written to `apps/web/dist`.
+
+Start the mobile development server from the repository root:
+
+```powershell
+npm.cmd run dev:mobile
+```
+
+NEXORA uses a custom Expo development build because speech recognition is a
+native module; Expo Go is not supported for the mobile app. Cloud builds use
+EAS, so neither Xcode nor Android Studio/Android SDK is required on the
+development computer. Install the development build on a physical device,
+then keep the phone and computer on the same network when starting Metro in
+LAN mode.
+
+### Android APK builds
+
+Build a standalone Android APK in EAS and install it on an Android device; no
+Android Studio or local SDK is needed. From the repository root, run:
+
+```powershell
+npm.cmd run build:android:apk
+```
+
+The `preview` profile creates an installable APK. EAS prints a build page and
+installation link when the cloud build finishes. This APK includes the local
+demo devices; connecting it to a backend on a physical phone requires a
+reachable HTTPS API origin configured as `EXPO_PUBLIC_API_URL` in the EAS
+build environment before building. Do not use `10.0.2.2` for a physical phone;
+that address is only for the Android emulator. For development-client builds
+that connect to Metro, use the `development` profile instead and start Metro
+from the repository root with `npm.cmd run dev:mobile`.
+
+### Physical iPhone development from Windows
+
+Install Node.js dependencies from the repository root:
+
+```powershell
+npm.cmd install
+Copy-Item apps\mobile\.env.example apps\mobile\.env.local
+```
+
+Edit `apps\mobile\.env.local` and set `EXPO_PUBLIC_API_URL` to the computer's
+LAN address, for example `http://192.168.1.20:8000`. Start the backend in a
+separate repository-root terminal, bound to the LAN interface:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Allow port 8000 through Windows Firewall on the private network. The phone and
+computer must be on the same Wi-Fi. The development-only native configuration
+allows local HTTP connections and requests iOS local-network permission;
+preview and production builds do not enable this exception. For use outside
+the local network, configure `EXPO_PUBLIC_API_URL` with a trusted HTTPS backend
+instead.
+
+In a terminal, authenticate and initialize EAS once, then register the iPhone
+for internal installation:
+
+```powershell
+Set-Location apps\mobile
+npx.cmd eas-cli@latest login
+npx.cmd eas-cli@latest init
+npx.cmd eas-cli@latest device:create
+```
+
+An Apple Developer account is required for installing an internal iOS build
+on a physical iPhone. Build it in the EAS cloud and install it on the registered
+iPhone using the installation link/QR code EAS provides:
+
+```powershell
+npx.cmd eas-cli@latest build --platform ios --profile development
+```
+
+After installing the development build, return to the repository root and
+start Metro:
+
+```powershell
+Set-Location ..\..
+$env:APP_VARIANT = "development"
+npm.cmd run dev:mobile
+```
+
+Open the development build on the iPhone and connect it to the Metro URL shown
+in the terminal. Rebuild with EAS whenever a native dependency or native app
+configuration changes.
 
 Both apps show local demo lights, a fan, and climate readings by default.
 These demo records are in-memory and separate from backend data. To create a
@@ -181,17 +263,21 @@ MQTT, which remains disabled by default. The command endpoint accepts
 with a value from 0 to 100 for lights, `set_speed` from 0 to 3 for fans, and
 `open`, `close`, or `set_position` from 0 to 100 for curtains.
 
-NORA supports tap-to-talk and typed commands for lights, fans, and curtains in
-both clients. It uses browser/OS speech recognition, then interprets the
-transcript locally and sends supported device commands through the existing
-device API. NORA does not send audio or transcripts to an AI service; device
-commands still go to FastAPI when controlling backend devices. Voice input is
-available in browsers that expose `SpeechRecognition` or
+NORA automatically listens for the wake phrases “Hey Method,” “Hey Nona,” and
+“Hey Nexora” while the web page or mobile app is open in the foreground. Say a supported
+light, fan, or curtain command after the wake phrase, or say the wake phrase
+first and give the command within eight seconds. This works from any app page;
+the microphone button in the assistant can
+pause or resume wake-word listening. NORA uses browser/OS speech recognition,
+then interprets the transcript locally and sends supported device commands
+through the existing device API. Microphone permission is required; listening
+stops when you leave the assistant (and, on web, when the page is hidden).
+Voice input is available in browsers that expose `SpeechRecognition` or
 `webkitSpeechRecognition`; typing remains available in unsupported browsers.
-The mobile speech-recognition module is native, so voice input requires an
-Expo development build and the app must not be launched in stock Expo Go.
-Build and run the Android development app with `npx expo run:android` after
-installing dependencies and setting up Android Studio.
+The mobile speech-recognition module is native on both iOS and Android, so
+voice input requires an Expo development build and the app must not be launched
+in stock Expo Go. The shared React Native code uses the module's platform
+permissions and recognition events on both platforms.
 
 ## Scheduled automations
 

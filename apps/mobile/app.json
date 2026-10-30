@@ -7,6 +7,7 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "plugins": [
+      "expo-font",
       [
         "expo-speech-recognition",
         {
@@ -22,6 +23,12 @@
     "ios": {
       "bundleIdentifier": "com.nexora.smarthome",
       "supportsTablet": true
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2f22e061-ecde-4319-a18b-e156f2da8603"
+      }
+    },
+    "owner": "methodmbowana"
   }
 }

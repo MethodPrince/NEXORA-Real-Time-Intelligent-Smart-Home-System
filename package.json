@@ -8,8 +8,9 @@
   ],
   "scripts": {
     "dev:web": "npm run dev --workspace @nexora/web",
-    "dev:android": "npm run start --workspace @nexora/mobile",
+    "dev:mobile": "npm run start --workspace @nexora/mobile -- --dev-client --lan",
     "build:web": "npm run build --workspace @nexora/web",
+    "build:android:apk": "npm run build:apk --workspace @nexora/mobile",
     "test:web": "npm run test --workspace @nexora/web",
     "typecheck:mobile": "npm run typecheck --workspace @nexora/mobile"
   }
