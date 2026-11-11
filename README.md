@@ -279,6 +279,60 @@ voice input requires an Expo development build and the app must not be launched
 in stock Expo Go. The shared React Native code uses the module's platform
 permissions and recognition events on both platforms.
 
+## Authentication and role-based access
+
+Private REST and WebSocket connections require a bearer JWT and an authorized
+home selection. Roles (`ADMIN`, `STANDARD_USER`, and `GUEST`) are assigned per
+home, and a user may belong to more than one home. REST requests select a home
+with `X-Home-ID`; WebSocket connections select one with the `home_id` query
+parameter. FastAPI verifies active membership on every request and scopes device,
+sensor, automation, activity, and security-event queries to that home. Admins
+can administer only homes where they have the Admin role. Standard Users and
+Guests see and control only devices explicitly granted to them; Guests cannot
+manage automations or read activity/security logs.
+
+Create the first Admin from a trusted backend/CLI environment after applying
+migrations. The command prompts for the initial credentials without echoing
+the password and refuses to run once any Admin account exists:
+
+```powershell
+python -m alembic upgrade head
+python -m app.cli create-admin
+```
+
+The first Admin setup creates a home and its Admin membership. Public
+registration creates only an unassigned Standard User; an Admin must add that
+account to a home and assign its per-home role. Admins can add existing users,
+create accounts, assign roles, deactivate or remove home memberships, and grant
+device visibility and control separately. Membership deactivation preserves
+account data and access to other homes; it blocks access to the selected home.
+
+Set `NEXORA_JWT_SECRET_KEY` in the backend environment to a unique random
+secret (at least 32 bytes); do not use the example file's blank value in a
+deployed environment or put the secret in either client environment. For
+example, generate one locally with
+`python -c "import secrets; print(secrets.token_urlsafe(48))"` and store it
+only in the backend's environment/secret settings. Set
+`NEXORA_CORS_ORIGINS` to the exact trusted dashboard origins and
+`NEXORA_ACCESS_TOKEN_EXPIRE_MINUTES` if a different token lifetime is needed.
+The web and mobile clients keep access tokens in memory, so a page/app restart
+requires signing in again.
+
+The RBAC migration renames the legacy `HOME_USER` role to `STANDARD_USER`,
+marks existing accounts active, and creates a control grant for each device's
+existing owner. The multi-home migration creates the legacy `NEXORA Home`,
+maps existing users to home memberships using their previous roles, and
+backfills existing devices, automations, activity logs, and security events
+without dropping data. Review this migration against a database backup before
+applying it to an existing PostgreSQL/Neon database.
+
+The Admin security panel can toggle public registration and view safe
+configuration status. Registration is global and can be changed only by the
+bootstrap/platform Admin; per-home Admin memberships cannot change this
+platform-wide setting. Signing secrets, CORS origins, database credentials,
+and token lifetime remain backend environment settings and are never exposed
+or changed through the API.
+
 ## Scheduled automations
 
 The web dashboard and mobile app can create, pause, resume, and delete

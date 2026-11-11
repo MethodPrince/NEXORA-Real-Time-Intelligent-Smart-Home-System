@@ -5,6 +5,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy import inspect
 from sqlalchemy import text
+from uuid import uuid4
 
 from app.core.config import Settings
 from app.db import models
@@ -62,5 +63,60 @@ def test_initial_migration_creates_and_downgrades_all_tables(tmp_path) -> None:
 
             command.downgrade(config, "base")
             assert "users" not in inspect(connection).get_table_names()
+    finally:
+        engine.dispose()
+
+
+def test_multi_home_migration_preserves_existing_users_and_devices(tmp_path) -> None:
+    database_path = tmp_path / "multi-home-backfill.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    project_root = Path(__file__).resolve().parents[1]
+    config = Config(str(project_root / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    engine = create_engine(database_url)
+    user_id = str(uuid4())
+    device_id = str(uuid4())
+
+    try:
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "c82f73b591ae")
+            connection.execute(
+                text(
+                    "INSERT INTO users "
+                    "(id, name, email, password_hash, role, created_at, updated_at) "
+                    "VALUES (:id, 'Existing User', 'existing@example.com', 'hash', "
+                    "'HOME_USER', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": user_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO devices "
+                    "(id, owner_user_id, name, device_type, status, online, created_at, updated_at) "
+                    "VALUES (:id, :user_id, 'Existing light', 'smart_light', "
+                    "'Off', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": device_id, "user_id": user_id},
+            )
+            connection.commit()
+            command.upgrade(config, "head")
+
+            home_id = connection.execute(
+                text("SELECT home_id FROM home_memberships WHERE user_id = :user_id"),
+                {"user_id": user_id},
+            ).scalar_one()
+            assert connection.execute(
+                text("SELECT name FROM devices WHERE id = :device_id"),
+                {"device_id": device_id},
+            ).scalar_one() == "Existing light"
+            assert connection.execute(
+                text("SELECT home_id FROM devices WHERE id = :device_id"),
+                {"device_id": device_id},
+            ).scalar_one() == home_id
+            assert connection.execute(
+                text("SELECT can_control FROM device_access WHERE user_id = :user_id"),
+                {"user_id": user_id},
+            ).scalar_one() == 1
     finally:
         engine.dispose()

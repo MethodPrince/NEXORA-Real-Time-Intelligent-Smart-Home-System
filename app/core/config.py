@@ -17,6 +17,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DATABASE_URL", "NEXORA_DATABASE_URL"),
         repr=False,
     )
+    jwt_secret_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NEXORA_JWT_SECRET_KEY", "JWT_SECRET_KEY"),
+        repr=False,
+    )
+    access_token_expire_minutes: int = Field(default=30, ge=5, le=1440)
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     mqtt_enabled: bool = False
     mqtt_host: str = "localhost"
     mqtt_port: int = Field(default=1883, ge=1, le=65535)
@@ -35,7 +42,13 @@ class Settings(BaseSettings):
     def validate_mqtt_credentials(self) -> "Settings":
         if self.mqtt_password and not self.mqtt_username:
             raise ValueError("NEXORA_MQTT_USERNAME is required with a password")
+        if self.jwt_secret_key is not None and len(self.jwt_secret_key) < 32:
+            raise ValueError("NEXORA_JWT_SECRET_KEY must be at least 32 characters")
         return self
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(
         env_file=".env",

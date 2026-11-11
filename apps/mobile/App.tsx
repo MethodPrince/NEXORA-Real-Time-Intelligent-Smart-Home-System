@@ -22,6 +22,8 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   ApiError,
+  type AdminUser,
+  type ActivityRecord,
   type AutomationCreate,
   type AutomationRule,
   type AutomationUpdate,
@@ -36,14 +38,17 @@ import {
   tickSimulatedSensors,
   toggleSimulatedDevice,
   voiceDeviceKind,
+  websocketProtocols,
   websocketUrl,
   type ActivityItem,
   type Device,
   type DeviceEvent,
+  type HomeInfo,
   type SimulatedDevice,
+  type UserRole,
 } from "@nexora/shared";
 
-type Section = "home" | "devices" | "activity" | "automations" | "nora" | "settings";
+type Section = "home" | "devices" | "activity" | "automations" | "nora" | "settings" | "users";
 type AnyDevice = Device | SimulatedDevice;
 
 const apiBase = process.env.EXPO_PUBLIC_API_URL || "http://10.0.2.2:8000";
@@ -54,6 +59,7 @@ const navigation: { id: Section; label: string; icon: keyof typeof Ionicons.glyp
   { id: "activity", label: "Activity", icon: "pulse-outline" },
   { id: "nora", label: "NORA", icon: "sparkles-outline" },
   { id: "settings", label: "Settings", icon: "settings-outline" },
+  { id: "users", label: "Users", icon: "people-outline" },
 ];
 
 function isSimulated(device: AnyDevice): device is SimulatedDevice {
@@ -113,6 +119,21 @@ function App() {
   const [simulation, setSimulation] = useState(true);
   const [apiStatus, setApiStatus] = useState<"checking" | "connected" | "offline">("checking");
   const [socketStatus, setSocketStatus] = useState<"checking" | "connected" | "offline">("checking");
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authRole, setAuthRole] = useState<UserRole | null>(null);
+  const [authUserId, setAuthUserId] = useState("");
+  const [homes, setHomes] = useState<HomeInfo[]>([]);
+  const [selectedHomeId, setSelectedHomeId] = useState("");
+  const [homePickerVisible, setHomePickerVisible] = useState(false);
+  const [newHomeName, setNewHomeName] = useState("");
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [activityRecords, setActivityRecords] = useState<ActivityRecord[]>([]);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [notifications, setNotifications] = useState<ActivityItem[]>([]);
   const [addVisible, setAddVisible] = useState(false);
@@ -143,6 +164,7 @@ function App() {
   const selectedAutomationDevice = automationDevices.find(
     (device) => device.id === automationDeviceId,
   ) ?? automationDevices[0];
+  const selectedHome = homes.find((home) => home.id === selectedHomeId) ?? null;
 
   useSpeechRecognitionEvent("start", () => {
     setIsListening(true);
@@ -210,6 +232,15 @@ function App() {
   });
 
   useEffect(() => {
+    api.setAccessToken(authToken);
+  }, [authToken]);
+
+  useEffect(() => {
+    api.setHomeId(selectedHomeId || null);
+  }, [selectedHomeId]);
+
+  useEffect(() => {
+    if (!authToken || !selectedHomeId) return;
     let active = true;
     const refresh = async () => {
       try {
@@ -229,10 +260,10 @@ function App() {
       active = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [authToken, selectedHomeId]);
 
   useEffect(() => {
-    if (section !== "automations") return;
+    if (!authToken || !selectedHomeId || section !== "automations") return;
     let active = true;
     setAutomationLoading(true);
     void api.listAutomations().then((rules) => {
@@ -248,16 +279,43 @@ function App() {
     return () => {
       active = false;
     };
-  }, [section]);
+  }, [authToken, section, selectedHomeId]);
 
   useEffect(() => {
+    if (!authToken || !selectedHomeId || authRole !== "ADMIN" || section !== "users") return;
+    let active = true;
+    void api.listUsers().then((users) => {
+      if (active) setAdminUsers(users);
+    }).catch((error: unknown) => {
+      if (active) setToast(error instanceof ApiError ? error.message : "Could not load users.");
+    });
+    return () => { active = false; };
+  }, [authToken, authRole, section, selectedHomeId]);
+
+  useEffect(() => {
+    if (!authToken || !selectedHomeId || section !== "activity") return;
+    let active = true;
+    const request = authRole === "ADMIN" ? api.listAllActivity() : api.listActivity();
+    void request.then((records) => {
+      if (active) setActivityRecords(records);
+    }).catch((error: unknown) => {
+      if (active) setToast(error instanceof ApiError ? error.message : "Could not load activity.");
+    });
+    return () => { active = false; };
+  }, [authToken, authRole, section, selectedHomeId]);
+
+  useEffect(() => {
+    if (!authToken || !selectedHomeId) return;
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let closed = false;
     const connect = () => {
       if (closed) return;
       try {
-        socket = new WebSocket(websocketUrl(apiBase, apiBase));
+        socket = new WebSocket(
+          websocketUrl(apiBase, apiBase, selectedHomeId),
+          websocketProtocols(authToken),
+        );
         socket.onopen = () => setSocketStatus("connected");
         socket.onmessage = (message) => {
           try {
@@ -283,7 +341,7 @@ function App() {
       if (retry) clearTimeout(retry);
       socket?.close();
     };
-  }, []);
+  }, [authToken, selectedHomeId]);
 
   useEffect(() => {
     if (!simulation) return;
@@ -610,6 +668,7 @@ function App() {
   }
 
   useEffect(() => {
+    if (!authToken) return;
     wakeListeningRef.current = true;
     void startWakeWordListener();
     return () => {
@@ -621,8 +680,136 @@ function App() {
         wakeCommandTimerRef.current = null;
       }
     };
-  }, [section]);
+  }, [authToken, section]);
 
+  async function submitAuthentication() {
+    if (authMode === "register" && authPassword.length < 8) {
+      setAuthError("Password must contain at least 8 characters.");
+      return;
+    }
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const result = authMode === "register"
+        ? await api.register({ name: authName, email: authEmail, password: authPassword })
+        : await api.login({ email: authEmail, password: authPassword });
+      api.setAccessToken(result.access_token);
+      const availableHomes = await api.listHomes();
+      const initialHome = availableHomes.length === 1 ? availableHomes[0] : null;
+      api.setHomeId(initialHome?.id ?? null);
+      setHomes(availableHomes);
+      setSelectedHomeId(initialHome?.id ?? "");
+      setAuthToken(result.access_token);
+      setAuthRole(initialHome?.role ?? null);
+      setAuthUserId(result.user.id);
+      setAuthPassword("");
+    } catch (error) {
+      setAuthError(error instanceof ApiError ? error.message : "Could not authenticate.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  function selectHome(homeId: string) {
+    const home = homes.find((entry) => entry.id === homeId);
+    api.setHomeId(homeId || null);
+    setSelectedHomeId(homeId);
+    setAuthRole(home?.role ?? null);
+    setSection("home");
+    setDevices([]);
+    setAutomations([]);
+    setActivityRecords([]);
+    setAdminUsers([]);
+  }
+
+  async function createHome() {
+    if (!newHomeName.trim()) return;
+    try {
+      const created = await api.createHome(newHomeName.trim());
+      const nextHomes = [...homes, created];
+      setHomes(nextHomes);
+      setNewHomeName("");
+      setHomePickerVisible(false);
+      selectHome(created.id);
+      setAuthRole("ADMIN");
+      setHomes(nextHomes);
+      setToast(`${created.name} created.`);
+    } catch (error) {
+      setToast(error instanceof ApiError ? error.message : "Could not create the home.");
+    }
+  }
+
+  if (!authToken) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.authScreen}>
+          <View style={styles.authPanel}>
+            <Text style={styles.brand}>NEXORA</Text>
+            <Text style={styles.authTitle}>{authMode === "login" ? "Welcome back" : "Create your account"}</Text>
+            <Text style={styles.authSubtitle}>Sign in to securely access your home.</Text>
+            {authMode === "register" && <>
+              <Text style={styles.authLabel}>Name</Text>
+              <TextInput value={authName} onChangeText={setAuthName} autoComplete="name" style={styles.authInput} maxLength={200} />
+            </>}
+            <Text style={styles.authLabel}>Email</Text>
+            <TextInput value={authEmail} onChangeText={setAuthEmail} autoCapitalize="none" keyboardType="email-address" autoComplete="email" style={styles.authInput} maxLength={320} />
+            <Text style={styles.authLabel}>Password</Text>
+            <TextInput value={authPassword} onChangeText={setAuthPassword} secureTextEntry autoComplete={authMode === "login" ? "current-password" : "new-password"} style={styles.authInput} maxLength={128} />
+            {authMode === "register" && <Text style={styles.authHint}>Use at least 8 characters.</Text>}
+            {!!authError && <Text accessibilityRole="alert" style={styles.authError}>{authError}</Text>}
+            <Pressable style={[styles.primaryButton, authBusy && styles.authDisabled]} disabled={authBusy} onPress={() => void submitAuthentication()}>
+              <Text style={styles.primaryButtonText}>{authBusy ? "Please wait…" : authMode === "login" ? "Sign in" : "Create account"}</Text>
+            </Pressable>
+            <Pressable onPress={() => setAuthMode(authMode === "login" ? "register" : "login")}>
+              <Text style={styles.authSwitch}>{authMode === "login" ? "New to NEXORA? Create an account" : "Already have an account? Sign in"}</Text>
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
+
+  if (!selectedHomeId) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <View style={styles.authScreen}>
+          <View style={styles.authPanel}>
+            <Text style={styles.brand}>NEXORA</Text>
+            <Text style={styles.authTitle}>{homes.length ? "Choose a home" : "No home access yet"}</Text>
+            <Text style={styles.authSubtitle}>
+              {homes.length
+                ? "Select a home to view its devices and information."
+                : "Ask a home administrator to add your account, then sign in again."}
+            </Text>
+            {homes.map((home) => (
+              <Pressable key={home.id} style={styles.primaryButton} onPress={() => selectHome(home.id)}>
+                <Text style={styles.primaryButtonText}>{home.name} · {home.role.replaceAll("_", " ")}</Text>
+              </Pressable>
+            ))}
+            <Pressable onPress={() => {
+              api.setAccessToken(null);
+              api.setHomeId(null);
+              setAuthToken(null);
+              setAuthRole(null);
+              setAuthUserId("");
+              setHomes([]);
+              setSelectedHomeId("");
+            }}>
+              <Text style={styles.authSwitch}>Sign out</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const visibleNavigation = navigation.filter(({ id }) => {
+    if (id === "users") return authRole === "ADMIN";
+    if (authRole === "GUEST") return ["home", "devices", "nora"].includes(id);
+    return true;
+  });
   const currentPage = navigation.find((item) => item.id === section)?.label ?? "Home";
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -635,17 +822,73 @@ function App() {
           </View>
           <View style={styles.topbarRight}>
             <View style={[styles.connection, apiStatus === "connected" ? styles.connectionOn : styles.connectionOff]}><View style={styles.statusDot} /><Text style={styles.connectionText}>API {apiStatus}</Text></View>
+            <Pressable accessibilityRole="button" onPress={() => setHomePickerVisible(true)}>
+              <Text style={styles.signOut}>{selectedHome?.name ?? "Select home"} ▾</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" onPress={() => {
+              api.setAccessToken(null);
+              api.setHomeId(null);
+              setAuthToken(null);
+              setAuthRole(null);
+              setAuthUserId("");
+              setHomes([]);
+              setSelectedHomeId("");
+              setAdminUsers([]);
+            }}><Text style={styles.signOut}>Sign out</Text></Pressable>
             <Pressable style={styles.bellButton} accessibilityLabel="Open notifications" onPress={() => setNoticeVisible(true)}>
               <Ionicons name="notifications-outline" size={20} color={colors.ink} />
               {notifications.length > 0 && <View style={styles.bellCount}><Text style={styles.bellCountText}>{Math.min(notifications.length, 9)}</Text></View>}
             </Pressable>
           </View>
+          <Modal
+            visible={homePickerVisible}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setHomePickerVisible(false)}
+          >
+            <View style={styles.modalBackdrop}>
+              <View style={styles.homeModal}>
+                <Text style={styles.authTitle}>Select a home</Text>
+                {homes.map((home) => (
+                  <Pressable
+                    key={home.id}
+                    style={styles.homeOption}
+                    onPress={() => {
+                      setHomePickerVisible(false);
+                      selectHome(home.id);
+                    }}
+                  >
+                    <Text style={styles.homeOptionName}>{home.name}</Text>
+                    <Text style={styles.homeOptionRole}>{home.role.replaceAll("_", " ")}</Text>
+                  </Pressable>
+                ))}
+                {authRole === "ADMIN" && (
+                  <>
+                    <TextInput
+                      value={newHomeName}
+                      onChangeText={setNewHomeName}
+                      placeholder="New home name"
+                      placeholderTextColor={colors.mutedInk}
+                      style={styles.authInput}
+                      maxLength={200}
+                    />
+                    <Pressable style={styles.primaryButton} onPress={() => void createHome()}>
+                      <Text style={styles.primaryButtonText}>Create home</Text>
+                    </Pressable>
+                  </>
+                )}
+                <Pressable onPress={() => setHomePickerVisible(false)}>
+                  <Text style={styles.authSwitch}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
         </View>
         <View style={styles.pageTitleBar}><Text style={styles.pageKicker}>SMART HOME / {currentPage.toUpperCase()}</Text><Text style={styles.pageTitle}>{currentPage}</Text></View>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
           {section === "home" && <HomeScreen devices={visibleDevices} events={events} simulation={simulation} socketStatus={socketStatus} onControl={control} onNavigate={setSection} />}
-          {section === "devices" && <DevicesScreen devices={visibleDevices} onControl={control} onAdd={() => setAddVisible(true)} onDelete={deleteDevice} />}
-          {section === "activity" && <ActivityScreen devices={visibleDevices} events={events} />}
+          {section === "devices" && <DevicesScreen devices={visibleDevices} onControl={control} onAdd={authRole === "ADMIN" ? () => setAddVisible(true) : undefined} onDelete={authRole === "ADMIN" ? deleteDevice : undefined} />}
+          {section === "activity" && <ActivityScreen devices={visibleDevices} events={events} records={activityRecords} />}
           {section === "automations" && <AutomationsScreen
             devices={automationDevices}
             selectedDevice={selectedAutomationDevice}
@@ -670,9 +913,24 @@ function App() {
           />}
           {section === "nora" && <NoraScreen messages={noraMessages} value={noraInput} onChange={setNoraInput} onSend={() => void sendNora()} onMic={() => void startVoiceInput()} voiceStatus={voiceStatus} isListening={isListening} />}
           {section === "settings" && <SettingsScreen apiStatus={apiStatus} socketStatus={socketStatus} simulation={simulation} onToggleSimulation={() => setSimulation((value) => !value)} />}
+          {section === "users" && authRole === "ADMIN" && <AdminUsersScreen users={adminUsers} currentUserId={authUserId} onUpdate={(id, changes) => {
+            void api.updateUser(id, changes).then((updated) => {
+              setAdminUsers((current) => current.map((user) => user.id === id ? updated : user));
+            }).catch((error: unknown) => setToast(error instanceof ApiError ? error.message : "Could not update user."));
+          }} onDelete={(user) => Alert.alert(
+            "Remove user?",
+            `Remove ${user.name} from ${selectedHome?.name ?? "this home"}? Their account and other home access will remain.`,
+            [
+              { text: "Cancel", style: "cancel" },
+              { text: "Remove", style: "destructive", onPress: () => {
+                void api.deleteUser(user.id).then(() => setAdminUsers((current) => current.filter((entry) => entry.id !== user.id)))
+                  .catch((error: unknown) => setToast(error instanceof ApiError ? error.message : "Could not remove user."));
+              } },
+            ],
+          )} />}
         </ScrollView>
         <View style={styles.bottomNav}>
-          {navigation.map((item) => {
+          {visibleNavigation.map((item) => {
             const selected = item.id === section;
             return <Pressable key={item.id} onPress={() => setSection(item.id)} style={styles.navButton} accessibilityRole="button" accessibilityState={{ selected }} accessibilityLabel={item.label}>
               <Ionicons name={item.icon} size={19} color={selected ? colors.cyan : "#AAA7A0"} />
@@ -756,27 +1014,81 @@ function DeviceTile({ device, onControl, onDelete }: { device: AnyDevice; onCont
   </View>;
 }
 
-function DevicesScreen({ devices, onControl, onAdd, onDelete }: { devices: AnyDevice[]; onControl: (device: AnyDevice) => void; onAdd: () => void; onDelete: (device: AnyDevice) => void }) {
+function DevicesScreen({ devices, onControl, onAdd, onDelete }: { devices: AnyDevice[]; onControl: (device: AnyDevice) => void; onAdd?: () => void; onDelete?: (device: AnyDevice) => void }) {
   const rooms = [...new Set(devices.map((device) => device.room || "Unassigned"))];
   return <>
     <View style={styles.screenIntro}><Text style={styles.eyebrow}>DEVICE MANAGEMENT</Text><Text style={styles.screenTitle}>Your devices</Text><Text style={styles.mutedText}>Room-by-room controls · {devices.length} devices</Text></View>
-    <Pressable style={styles.outlineButton} onPress={onAdd}><Ionicons name="add" size={18} color={colors.cyan} /><Text style={styles.outlineButtonText}>Register device</Text></Pressable>
-    {rooms.map((room) => <View key={room}><SectionHeader title={room} action={`${devices.filter((device) => (device.room || "Unassigned") === room).length}`} /><View style={styles.deviceGrid}>{devices.filter((device) => (device.room || "Unassigned") === room).map((device) => <DeviceTile key={device.id} device={device} onControl={() => onControl(device)} onDelete={() => onDelete(device)} />)}</View></View>)}
+    {onAdd && <Pressable style={styles.outlineButton} onPress={onAdd}><Ionicons name="add" size={18} color={colors.cyan} /><Text style={styles.outlineButtonText}>Register device</Text></Pressable>}
+    {rooms.map((room) => <View key={room}><SectionHeader title={room} action={`${devices.filter((device) => (device.room || "Unassigned") === room).length}`} /><View style={styles.deviceGrid}>{devices.filter((device) => (device.room || "Unassigned") === room).map((device) => <DeviceTile key={device.id} device={device} onControl={() => onControl(device)} onDelete={onDelete ? () => onDelete(device) : undefined} />)}</View></View>)}
     {!devices.length && <EmptyCard text="No devices loaded. Check the API or enable the simulator in Settings." />}
   </>;
 }
 
-function ActivityScreen({ devices, events }: { devices: AnyDevice[]; events: DeviceEvent[] }) {
+function AdminUsersScreen({
+  users,
+  currentUserId,
+  onUpdate,
+  onDelete,
+}: {
+  users: AdminUser[];
+  currentUserId: string;
+  onUpdate: (id: string, changes: Partial<Pick<AdminUser, "role" | "is_active">>) => void;
+  onDelete: (user: AdminUser) => void;
+}) {
+  return <>
+    <View style={styles.screenIntro}>
+      <Text style={styles.eyebrow}>ACCESS CONTROL</Text>
+      <Text style={styles.screenTitle}>User management</Text>
+      <Text style={styles.mutedText}>Assign roles and manage account status. Full device grants are available on the web dashboard.</Text>
+    </View>
+    <View style={styles.panel}>
+      {users.length ? users.map((user) => <View style={styles.eventRow} key={user.id}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.rowTitle}>{user.name}</Text>
+          <Text style={styles.mutedText}>{user.email} · {user.is_active ? "Active" : "Inactive"}</Text>
+        </View>
+        {user.id !== currentUserId && <View style={styles.adminUserActions}>
+          <Pressable onPress={() => {
+            const roles: UserRole[] = ["STANDARD_USER", "GUEST", "ADMIN"];
+            const next = roles[(roles.indexOf(user.role) + 1) % roles.length];
+            onUpdate(user.id, { role: next });
+          }}>
+            <Text style={styles.sectionAction}>{user.role.replaceAll("_", " ")}</Text>
+          </Pressable>
+          <Pressable onPress={() => onUpdate(user.id, { is_active: !user.is_active })}>
+            <Text style={styles.sectionAction}>{user.is_active ? "Deactivate" : "Activate"}</Text>
+          </Pressable>
+          <Pressable onPress={() => onDelete(user)}>
+            <Ionicons name="trash-outline" size={16} color="#A63B31" />
+          </Pressable>
+        </View>}
+      </View>) : <EmptyCard text="No user accounts found." />}
+    </View>
+  </>;
+}
+
+function ActivityScreen({ devices, events, records }: {
+  devices: AnyDevice[];
+  events: DeviceEvent[];
+  records: ActivityRecord[];
+}) {
   return <>
     <View style={styles.screenIntro}><Text style={styles.eyebrow}>LIVE SESSION</Text><Text style={styles.screenTitle}>Activity & safety</Text><Text style={styles.mutedText}>Session events only · not persisted history</Text></View>
     <View style={styles.panel}>
-      <Text style={styles.cardHeading}>Recent activity</Text>
+      <Text style={styles.cardHeading}>Recorded activity</Text>
+      {records.length ? records.slice(0, 50).map((record) => <View key={record.id} style={styles.eventRow}>
+        <View style={styles.eventGlyph}><Ionicons name="pulse-outline" size={16} color={colors.cyan} /></View>
+        <View style={{ flex: 1 }}><Text style={styles.rowTitle}>{record.event.replaceAll("_", " ")}</Text><Text style={styles.mutedText}>{record.source}{record.device_id ? ` · Device ${record.device_id}` : ""}{record.action ? ` · ${record.action}` : ""}</Text></View>
+      </View>) : <EmptyCard text="No permitted activity records are available." />}
+    </View>
+    <View style={[styles.panel, { marginTop: 14 }]}>
+      <Text style={styles.cardHeading}>Live session</Text>
       {events.length ? events.slice(0, 20).map((event, index) => {
         const device = devices.find((item) => item.id === event.device_id);
         return <View key={`${event.timestamp}-${index}`} style={styles.eventRow}><View style={styles.eventGlyph}><Ionicons name="pulse-outline" size={16} color={colors.cyan} /></View><View style={{ flex: 1 }}><Text style={styles.rowTitle}>{event.type.replaceAll("_", " ")}</Text><Text style={styles.mutedText}>{device?.name ?? event.device_id ?? event.message ?? "Backend event"}{event.reading !== undefined ? ` · ${event.reading}${event.unit ?? ""}` : ""}</Text></View></View>;
       }) : <EmptyCard text="Simulator and WebSocket events will appear here." />}
     </View>
-    <View style={[styles.panel, { marginTop: 14 }]}><View style={styles.cardHeadingRow}><Text style={styles.cardHeading}>Security center</Text><Ionicons name="shield-checkmark-outline" size={17} color="#218353" /></View><Text style={styles.mutedText}>The security-events model has no read endpoint yet. No live security status is available.</Text></View>
+    <View style={[styles.panel, { marginTop: 14 }]}><View style={styles.cardHeadingRow}><Text style={styles.cardHeading}>Security center</Text><Ionicons name="shield-checkmark-outline" size={17} color="#218353" /></View><Text style={styles.mutedText}>Sensitive security events are restricted to Administrators and available from the web dashboard.</Text></View>
     <View style={[styles.panel, { marginTop: 14 }]}><Text style={styles.cardHeading}>Push notifications</Text><Text style={styles.mutedText}>In-app alert preview only. Push delivery is not configured.</Text></View>
   </>;
 }
@@ -905,6 +1217,17 @@ function EmptyCard({ text }: { text: string }) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.charcoal },
+  authScreen: { flex: 1, justifyContent: "center", padding: 22, backgroundColor: colors.charcoal },
+  authPanel: { padding: 22, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  authTitle: { marginTop: 18, color: colors.ink, fontSize: 24, fontWeight: "700" },
+  authSubtitle: { marginTop: 5, marginBottom: 18, color: colors.mutedInk, fontSize: 11 },
+  authLabel: { marginTop: 10, marginBottom: 6, color: colors.ink, fontSize: 10, fontWeight: "700" },
+  authInput: { minHeight: 42, paddingHorizontal: 11, borderWidth: 1, borderColor: colors.border, borderRadius: 9, backgroundColor: colors.paper, color: colors.ink, fontSize: 12 },
+  authHint: { marginTop: 6, color: colors.mutedInk, fontSize: 9 },
+  authError: { marginTop: 12, color: "#B42318", fontSize: 10 },
+  authDisabled: { opacity: 0.6 },
+  authSwitch: { marginTop: 14, color: colors.cyan, textAlign: "center", fontSize: 10, fontWeight: "600" },
+  signOut: { color: "#E6F1F4", fontSize: 8, fontWeight: "600" },
   app: { flex: 1, backgroundColor: colors.paper },
   topbar: { minHeight: 58, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: colors.charcoal },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 9 },
@@ -977,6 +1300,7 @@ const styles = StyleSheet.create({
   cardHeading: { marginBottom: 10, color: colors.ink, fontSize: 13, fontWeight: "700" },
   cardHeadingRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   eventRow: { minHeight: 49, flexDirection: "row", alignItems: "center", gap: 9, borderBottomWidth: 1, borderBottomColor: colors.border },
+  adminUserActions: { alignItems: "flex-end", gap: 7, paddingVertical: 6 },
   eventGlyph: { width: 30, height: 30, borderRadius: 10, backgroundColor: "#332719", alignItems: "center", justifyContent: "center" },
   automationHero: { padding: 20, borderRadius: 17, backgroundColor: colors.charcoalSoft, borderWidth: 1, borderColor: colors.border },
   automationTitle: { marginTop: 12, color: "white", fontSize: 19, fontWeight: "700" },
@@ -1015,6 +1339,10 @@ const styles = StyleSheet.create({
   privacyNote: { flexDirection: "row", gap: 8, alignItems: "flex-start", marginTop: 14, padding: 12, borderRadius: 11, backgroundColor: "#29251F" },
   emptyCard: { minHeight: 75, marginTop: 8, padding: 13, borderRadius: 13, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, flexDirection: "row", gap: 8, alignItems: "center" },
   modalBackdrop: { flex: 1, padding: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(10,20,29,.5)" },
+  homeModal: { width: "100%", padding: 18, borderRadius: 17, backgroundColor: colors.surface },
+  homeOption: { minHeight: 44, marginTop: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: colors.surfaceSoft, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  homeOptionName: { color: colors.ink, fontSize: 11, fontWeight: "700" },
+  homeOptionRole: { color: colors.mutedInk, fontSize: 9, textTransform: "capitalize" },
   modal: { width: "100%", padding: 18, borderRadius: 17, backgroundColor: colors.surface },
   modalHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
   modalTitle: { color: colors.ink, fontSize: 16, fontWeight: "700" },

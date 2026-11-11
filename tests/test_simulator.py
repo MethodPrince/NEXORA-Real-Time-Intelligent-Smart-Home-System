@@ -11,6 +11,8 @@ from app.api.routes.device_commands import get_mqtt_service
 from app.db.base import Base
 from app.db.dependencies import get_db_session
 from app.main import app
+from tests.auth_helpers import make_current_user_admin
+from tests.auth_helpers import register_user
 
 
 @pytest.fixture
@@ -41,6 +43,8 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_mqtt_service] = lambda: UnexpectedMQTTService()
     try:
         with TestClient(app) as test_client:
+            register_user(test_client)
+            make_current_user_admin(test_client, session_factory)
             yield test_client
     finally:
         app.dependency_overrides.pop(get_db_session, None)
@@ -117,7 +121,13 @@ def test_light_commands_persist_and_broadcast_state(client: TestClient) -> None:
         json={"name": "Desk lamp", "device_type": "light", "simulated": True},
     ).json()
 
-    with client.websocket_connect("/ws") as websocket:
+    token = client.headers["Authorization"].removeprefix("Bearer ")
+    home_id = client.headers["X-Home-ID"]
+    with client.websocket_connect(
+        f"/ws?home_id={home_id}",
+        subprotocols=["nexora", f"bearer.{token}"],
+        headers={"origin": "http://localhost:5173"},
+    ) as websocket:
         powered = client.post(
             f"/devices/{created['id']}/command",
             json={"command": "set_power", "parameters": {"enabled": True}},

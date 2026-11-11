@@ -5,20 +5,26 @@ from uuid import UUID
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
+from fastapi import Request
 from fastapi import Response
-from sqlalchemy import delete
 from sqlalchemy import select
+from sqlalchemy import delete
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.schemas.devices import DeviceCreate
 from app.api.schemas.devices import DeviceRead
 from app.api.schemas.devices import DeviceUpdate
+from app.db.dependencies import HomeAccess
+from app.db.dependencies import get_current_home
 from app.db.dependencies import get_db_session
+from app.db.dependencies import require_admin
 from app.db.models import Device
+from app.db.models import DeviceAccess
 from app.services.simulator import device_kind
 from app.services.simulator import encode_state
 from app.services.simulator import initial_state
+from app.services.security_events import record_security_event
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +43,11 @@ def _raise_database_error(operation: str, error: SQLAlchemyError) -> NoReturn:
 def create_device(
     device_data: DeviceCreate,
     session: Session = Depends(get_db_session),
+    access: HomeAccess = Depends(require_admin),
 ) -> Device:
     values = device_data.model_dump(exclude={"simulated"})
+    values["owner_user_id"] = access.user.id
+    values["home_id"] = access.home.id
     if device_data.simulated:
         kind = device_kind(device_data.device_type)
         if kind is None:
@@ -61,9 +70,21 @@ def create_device(
 
 
 @router.get("", response_model=list[DeviceRead])
-def list_devices(session: Session = Depends(get_db_session)) -> list[Device]:
+def list_devices(
+    session: Session = Depends(get_db_session),
+    access: HomeAccess = Depends(get_current_home),
+) -> list[Device]:
     try:
-        statement = select(Device).order_by(Device.created_at, Device.id)
+        statement = select(Device).where(Device.home_id == access.home.id)
+        if access.role.value != "ADMIN":
+            statement = statement.where(
+                Device.id.in_(
+                    select(DeviceAccess.device_id).where(
+                        DeviceAccess.user_id == access.user.id
+                    )
+                )
+            )
+        statement = statement.order_by(Device.created_at, Device.id)
         return list(session.scalars(statement))
     except SQLAlchemyError as error:
         _raise_database_error("listing", error)
@@ -72,13 +93,40 @@ def list_devices(session: Session = Depends(get_db_session)) -> list[Device]:
 @router.get("/{device_id}", response_model=DeviceRead)
 def get_device(
     device_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
+    access: HomeAccess = Depends(get_current_home),
 ) -> Device:
     try:
-        device = session.get(Device, device_id)
+        device = session.scalar(
+            select(Device).where(
+                Device.id == device_id,
+                Device.home_id == access.home.id,
+            )
+        )
     except SQLAlchemyError as error:
         _raise_database_error("retrieval", error)
-    if device is None:
+    if device is None or (
+        access.role.value != "ADMIN"
+        and session.scalar(
+            select(DeviceAccess.device_id).where(
+                DeviceAccess.user_id == access.user.id,
+                DeviceAccess.device_id == device_id,
+            )
+        )
+        is None
+    ):
+        record_security_event(
+            session,
+            event_type="device_access_denied",
+            severity="warning",
+            source="/devices/{device_id}",
+            outcome="denied",
+            user_id=access.user.id,
+            home_id=access.home.id,
+            request=request,
+            metadata={"device_id": str(device_id), "method": "GET"},
+        )
         raise HTTPException(status_code=404, detail="Device not found")
     return device
 
@@ -86,12 +134,30 @@ def get_device(
 @router.patch("/{device_id}", response_model=DeviceRead)
 def update_device(
     device_id: UUID,
+    request: Request,
     device_data: DeviceUpdate,
     session: Session = Depends(get_db_session),
+    access: HomeAccess = Depends(require_admin),
 ) -> Device:
     try:
-        device = session.get(Device, device_id)
+        device = session.scalar(
+            select(Device).where(
+                Device.id == device_id,
+                Device.home_id == access.home.id,
+            )
+        )
         if device is None:
+            record_security_event(
+                session,
+                event_type="device_management_denied",
+                severity="warning",
+                source="/devices/{device_id}",
+                outcome="denied",
+                user_id=access.user.id,
+                home_id=access.home.id,
+                request=request,
+                metadata={"device_id": str(device_id), "method": "PATCH"},
+            )
             raise HTTPException(status_code=404, detail="Device not found")
         for field_name, value in device_data.model_dump(exclude_unset=True).items():
             setattr(device, field_name, value)
@@ -108,11 +174,29 @@ def update_device(
 @router.delete("/{device_id}", status_code=204)
 def delete_device(
     device_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
+    access: HomeAccess = Depends(require_admin),
 ) -> Response:
     try:
-        result = session.execute(delete(Device).where(Device.id == device_id))
+        result = session.execute(
+            delete(Device).where(
+                Device.id == device_id,
+                Device.home_id == access.home.id,
+            )
+        )
         if result.rowcount == 0:
+            record_security_event(
+                session,
+                event_type="device_management_denied",
+                severity="warning",
+                source="/devices/{device_id}",
+                outcome="denied",
+                user_id=access.user.id,
+                home_id=access.home.id,
+                request=request,
+                metadata={"device_id": str(device_id), "method": "DELETE"},
+            )
             raise HTTPException(status_code=404, detail="Device not found")
         session.commit()
     except HTTPException:

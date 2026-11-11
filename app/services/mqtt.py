@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.db.dependencies import device_recipients
 from app.db.models import Device
 from app.db.models import Sensor
 from app.db.session import get_engine
@@ -243,7 +244,14 @@ class MQTTService:
             return
 
         if event is not None:
-            await connection_manager.broadcast(event)
+            recipient_ids = event.pop("_recipient_user_ids", [])
+            home_id = event.pop("_home_id", None)
+            if recipient_ids and home_id:
+                await connection_manager.broadcast_to_home_users(
+                    UUID(home_id),
+                    (UUID(user_id) for user_id in recipient_ids),
+                    event,
+                )
 
     @staticmethod
     def _parse_topic(topic: str) -> tuple[UUID, str]:
@@ -268,6 +276,7 @@ class MQTTService:
                 if device is None:
                     logger.warning("Ignoring MQTT message for unknown device %s", device_id)
                     return None
+                home_id, recipient_ids = device_recipients(session, device_id)
                 device.online = online
                 session.commit()
         except SQLAlchemyError:
@@ -275,6 +284,8 @@ class MQTTService:
             raise
         return {
             "type": "device_availability",
+            "_home_id": str(home_id) if home_id else None,
+            "_recipient_user_ids": [str(user_id) for user_id in recipient_ids],
             "device_id": str(device_id),
             "online": online,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -291,6 +302,7 @@ class MQTTService:
                 if device is None:
                     logger.warning("Ignoring MQTT message for unknown device %s", device_id)
                     return None
+                home_id, recipient_ids = device_recipients(session, device_id)
                 device.status = state.status
                 session.commit()
         except SQLAlchemyError:
@@ -298,6 +310,8 @@ class MQTTService:
             raise
         return {
             "type": "device_state",
+            "_home_id": str(home_id) if home_id else None,
+            "_recipient_user_ids": [str(user_id) for user_id in recipient_ids],
             "device_id": str(device_id),
             "status": state.status,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -314,6 +328,7 @@ class MQTTService:
                 if device is None:
                     logger.warning("Ignoring MQTT message for unknown device %s", device_id)
                     return None
+                home_id, recipient_ids = device_recipients(session, device_id)
                 sensor = Sensor(
                     device_id=device_id,
                     name=sensor_data.name,
@@ -330,6 +345,8 @@ class MQTTService:
             raise
         return {
             "type": "device_sensor",
+            "_home_id": str(home_id) if home_id else None,
+            "_recipient_user_ids": [str(user_id) for user_id in recipient_ids],
             "device_id": str(device_id),
             "sensor_id": str(sensor_id),
             "name": sensor_data.name,

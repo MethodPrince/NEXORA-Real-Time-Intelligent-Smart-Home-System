@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from uuid import UUID
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,8 @@ from app.db.models import ActivityLog
 from app.db.models import Device
 from app.db.models import Sensor
 from app.main import app
+from tests.auth_helpers import make_current_user_admin
+from tests.auth_helpers import register_user
 
 
 @pytest.fixture
@@ -42,6 +45,8 @@ def client(tmp_path) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db_session] = override_database_session
     try:
         with TestClient(app) as test_client:
+            register_user(test_client)
+            make_current_user_admin(test_client, session_factory)
             yield test_client
     finally:
         app.dependency_overrides.pop(get_db_session, None)
@@ -109,6 +114,7 @@ def test_device_create_and_patch_validate_input(client: TestClient) -> None:
 
 def test_missing_device_returns_not_found(client: TestClient) -> None:
     device_id = uuid4()
+    user_id = client.get("/auth/me").json()["id"]
     assert client.get(f"/devices/{device_id}").status_code == 404
     assert (
         client.patch(f"/devices/{device_id}", json={"online": True}).status_code
@@ -140,10 +146,14 @@ def test_delete_device_applies_existing_foreign_key_actions(
 ) -> None:
     database_path = tmp_path / "devices.db"
     device_id = uuid4()
+    user_id = UUID(client.get("/auth/me").json()["id"])
+    home_id = UUID(client.headers["X-Home-ID"])
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with Session(engine) as session:
         device = Device(
             id=device_id,
+            home_id=home_id,
+            owner_user_id=user_id,
             name="Sensor hub",
             device_type="hub",
         )
@@ -151,7 +161,7 @@ def test_delete_device_applies_existing_foreign_key_actions(
             Sensor(name="Temperature", sensor_type="temperature")
         )
         device.activity_logs.append(
-            ActivityLog(source="test", event="device-created")
+            ActivityLog(home_id=home_id, source="test", event="device-created")
         )
         session.add(device)
         session.commit()

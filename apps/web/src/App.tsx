@@ -4,10 +4,11 @@ import {
   ArrowUpRight,
   Bell,
   Bot,
-  ChevronDown,
   CircleHelp,
   Clock3,
   Command,
+  Eye,
+  EyeOff,
   Fan,
   Home,
   Lightbulb,
@@ -23,6 +24,7 @@ import {
   Sparkles,
   Thermometer,
   Trash2,
+  Users,
   Wifi,
   WifiOff,
   X,
@@ -30,7 +32,14 @@ import {
 import {
   ApiError,
   createDemoDevices,
+  websocketProtocols,
   type AutomationRule,
+  type AdminUser,
+  type AdminSecuritySettings,
+  type AdminSecurityEvent,
+  type ActivityRecord,
+  type DeviceGrant,
+  type UserRole,
   isDeviceEvent,
   extractAssistantWakeCommand,
   isAssistantGreeting,
@@ -45,10 +54,11 @@ import {
   type AutomationCreate,
   type Device,
   type DeviceEvent,
+  type HomeInfo,
   type SimulatedDevice,
 } from "@nexora/shared";
 
-type Section = "overview" | "devices" | "activity" | "automations" | "nora" | "settings";
+type Section = "overview" | "devices" | "activity" | "automations" | "nora" | "settings" | "users";
 type Connection = "checking" | "connected" | "offline";
 type AnyDevice = Device | SimulatedDevice;
 
@@ -93,6 +103,7 @@ const navItems: { id: Section; label: string; icon: typeof Home }[] = [
   { id: "automations", label: "Automations", icon: Sparkles },
   { id: "nora", label: "NORA assistant", icon: Bot },
   { id: "settings", label: "Settings", icon: Settings },
+  { id: "users", label: "User management", icon: Users },
 ];
 
 function isSimulated(device: AnyDevice): device is SimulatedDevice {
@@ -181,6 +192,28 @@ function App() {
   ]);
   const [voiceStatus, setVoiceStatus] = useState("Say “Hey Method,” “Hey Nona,” or “Hey Nexora” followed by a command from any page.");
   const [isListening, setIsListening] = useState(false);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [homes, setHomes] = useState<HomeInfo[]>([]);
+  const [selectedHomeId, setSelectedHomeId] = useState("");
+  const [authUser, setAuthUser] = useState<{
+    id: string; name: string; email: string; role: UserRole; is_active: boolean;
+    is_platform_admin: boolean;
+  } | null>(null);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [adminSecuritySettings, setAdminSecuritySettings] = useState<AdminSecuritySettings | null>(null);
+  const [activityRecords, setActivityRecords] = useState<ActivityRecord[]>([]);
+  const [adminSecurityEvents, setAdminSecurityEvents] = useState<AdminSecurityEvent[]>([]);
+  const [selectedAdminUserId, setSelectedAdminUserId] = useState("");
+  const [selectedUserGrants, setSelectedUserGrants] = useState<DeviceGrant[]>([]);
+  const [adminError, setAdminError] = useState("");
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const activeHome = homes.find((home) => home.id === selectedHomeId) ?? null;
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const wakeListeningRef = useRef(false);
   const wakeCommandTimerRef = useRef<number | null>(null);
@@ -199,6 +232,14 @@ function App() {
   const onlineCount = allDevices.filter((device) => device.online).length;
 
   useEffect(() => {
+    api.setAccessToken(authToken);
+  }, [authToken]);
+
+  useEffect(() => {
+    api.setHomeId(selectedHomeId || null);
+  }, [selectedHomeId]);
+
+  useEffect(() => {
     const updateTime = () => setCurrentTime(new Date());
     const updateWhenVisible = () => {
       if (document.visibilityState === "visible") updateTime();
@@ -214,6 +255,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!authToken || !selectedHomeId) return;
     let alive = true;
     const refresh = async () => {
       try {
@@ -231,10 +273,10 @@ function App() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [authToken, selectedHomeId]);
 
   useEffect(() => {
-    if (section !== "automations") return;
+    if (!authToken || !selectedHomeId || section !== "automations") return;
     let alive = true;
     const refresh = async () => {
       try {
@@ -256,16 +298,78 @@ function App() {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [section]);
+  }, [authToken, section, selectedHomeId]);
 
   useEffect(() => {
+    if (!authToken || !selectedHomeId || authUser?.role !== "ADMIN" || section !== "users") return;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const [users, securitySettings] = await Promise.all([
+          api.listUsers(),
+          authUser?.is_platform_admin
+            ? api.getAdminSecuritySettings()
+            : Promise.resolve(null),
+        ]);
+        if (!alive) return;
+        setAdminUsers(users);
+        setAdminSecuritySettings(securitySettings);
+        setAdminError("");
+      } catch (error) {
+        if (alive) setAdminError(error instanceof ApiError ? error.message : "Could not load users.");
+      }
+    };
+    void refresh();
+    return () => { alive = false; };
+  }, [authToken, authUser?.is_platform_admin, authUser?.role, section, selectedHomeId]);
+
+  useEffect(() => {
+    if (!authToken || !selectedHomeId || section !== "activity") return;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        if (authUser?.role === "ADMIN") {
+          const [activity, security] = await Promise.all([
+            api.listAllActivity(),
+            api.listSecurityEvents(),
+          ]);
+          if (!alive) return;
+          setAdminSecurityEvents(security);
+          setActivityRecords(activity);
+        } else {
+          setActivityRecords(await api.listActivity());
+        }
+      } catch (error) {
+        if (alive) setAdminError(error instanceof ApiError ? error.message : "Could not load activity.");
+      }
+    };
+    void refresh();
+    return () => { alive = false; };
+  }, [authToken, authUser?.role, section, selectedHomeId]);
+
+  useEffect(() => {
+    if (!authToken || !selectedHomeId || authUser?.role !== "ADMIN" || !selectedAdminUserId) return;
+    let alive = true;
+    void api.listDeviceAccess(selectedAdminUserId).then((grants) => {
+      if (alive) setSelectedUserGrants(grants);
+    }).catch((error: unknown) => {
+      if (alive) setAdminError(error instanceof ApiError ? error.message : "Could not load device access.");
+    });
+    return () => { alive = false; };
+  }, [authToken, authUser?.role, selectedAdminUserId, selectedHomeId]);
+
+  useEffect(() => {
+    if (!authToken || !selectedHomeId) return;
     let socket: WebSocket | undefined;
     let retryTimer = 0;
     let closed = false;
     const connect = () => {
       if (closed) return;
       try {
-        socket = new WebSocket(websocketUrl(apiBase, window.location.href));
+        socket = new WebSocket(
+          websocketUrl(apiBase, window.location.href, selectedHomeId),
+          websocketProtocols(authToken),
+        );
         socket.onopen = () => setWsConnection("connected");
         socket.onmessage = (message) => {
           try {
@@ -292,7 +396,7 @@ function App() {
       window.clearTimeout(retryTimer);
       socket?.close();
     };
-  }, []);
+  }, [authToken, selectedHomeId]);
 
   useEffect(() => {
     if (!simulation) return;
@@ -704,6 +808,7 @@ function App() {
   }
 
   useEffect(() => {
+    if (!authToken || !selectedHomeId) return;
     wakeListeningRef.current = true;
     startWakeWordListener();
     const resumeWhenVisible = () => {
@@ -731,9 +836,201 @@ function App() {
         wakeRestartTimerRef.current = null;
       }
     };
-  }, [section]);
+  }, [authToken, section]);
+
+  async function submitAuthentication(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const result = authMode === "register"
+        ? await api.register({ name: authName, email: authEmail, password: authPassword })
+        : await api.login({ email: authEmail, password: authPassword });
+      api.setAccessToken(result.access_token);
+      const availableHomes = await api.listHomes();
+      const initialHome = availableHomes.length === 1 ? availableHomes[0] : null;
+      api.setHomeId(initialHome?.id ?? null);
+      setHomes(availableHomes);
+      setSelectedHomeId(initialHome?.id ?? "");
+      setAuthToken(result.access_token);
+      setAuthUser(initialHome ? { ...result.user, role: initialHome.role } : result.user);
+      setAuthPassword("");
+    } catch (error) {
+      setAuthError(error instanceof ApiError ? error.message : "Could not authenticate.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  function selectHome(homeId: string) {
+    const home = homes.find((entry) => entry.id === homeId);
+    api.setHomeId(homeId || null);
+    setSelectedHomeId(homeId);
+    setAuthUser((current) => current && home ? { ...current, role: home.role } : current);
+    setSection("overview");
+    setDevices([]);
+    setAutomations([]);
+    setActivityRecords([]);
+    setAdminSecurityEvents([]);
+    setSelectedAdminUserId("");
+    setSelectedUserGrants([]);
+  }
+
+  async function createHome() {
+    const name = window.prompt("Name the new home");
+    if (!name?.trim()) return;
+    try {
+      const created = await api.createHome(name.trim());
+      const nextHomes = [...homes, created];
+      setHomes(nextHomes);
+      selectHome(created.id);
+      setHomes(nextHomes);
+      setToast(`${created.name} created.`);
+    } catch (error) {
+      setAdminError(error instanceof ApiError ? error.message : "Could not create the home.");
+    }
+  }
 
   const pageTitle = navItems.find((item) => item.id === section)?.label ?? "Overview";
+  const visibleNavItems = navItems.filter(({ id }) => {
+    if (id === "users") return authUser?.role === "ADMIN";
+    if (authUser?.role === "GUEST") return ["overview", "devices", "nora"].includes(id);
+    return true;
+  });
+
+  async function createAdminUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setAdminBusy(true);
+    try {
+      const created = await api.createUser({
+        name: String(form.get("name")).trim(),
+        email: String(form.get("email")).trim(),
+        password: String(form.get("password")),
+        role: String(form.get("role")) as UserRole,
+      });
+      setAdminUsers((current) => [...current, created]);
+      setAdminError("");
+      event.currentTarget.reset();
+    } catch (error) {
+      setAdminError(error instanceof ApiError ? error.message : "Could not create user.");
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
+  async function updateAdminUser(userId: string, changes: Partial<Pick<AdminUser, "role" | "is_active">>) {
+    setAdminBusy(true);
+    try {
+      const updated = await api.updateUser(userId, changes);
+      setAdminUsers((current) => current.map((user) => user.id === updated.id ? updated : user));
+      setAdminError("");
+    } catch (error) {
+      setAdminError(error instanceof ApiError ? error.message : "Could not update user.");
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
+  async function deleteAdminUser(user: AdminUser) {
+    if (!window.confirm(`Remove ${user.name} from ${activeHome?.name}? Their account and other home access will remain.`)) return;
+    setAdminBusy(true);
+    try {
+      await api.deleteUser(user.id);
+      setAdminUsers((current) => current.filter((entry) => entry.id !== user.id));
+      if (selectedAdminUserId === user.id) {
+        setSelectedAdminUserId("");
+        setSelectedUserGrants([]);
+      }
+      setAdminError("");
+    } catch (error) {
+      setAdminError(error instanceof ApiError ? error.message : "Could not remove user.");
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
+  async function saveUserDeviceAccess(
+    userId: string,
+    grants: Pick<DeviceGrant, "device_id" | "can_control">[],
+  ) {
+    setAdminBusy(true);
+    try {
+      setSelectedUserGrants(await api.replaceDeviceAccess(userId, grants));
+      setAdminError("");
+    } catch (error) {
+      setAdminError(error instanceof ApiError ? error.message : "Could not save device access.");
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
+  async function updateAdminSecuritySettings(registrationEnabled: boolean) {
+    setAdminBusy(true);
+    try {
+      setAdminSecuritySettings(await api.updateAdminSecuritySettings({
+        registration_enabled: registrationEnabled,
+      }));
+      setAdminError("");
+    } catch (error) {
+      setAdminError(error instanceof ApiError ? error.message : "Could not update security settings.");
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
+  if (!authToken) {
+    return (
+      <AuthPage
+        mode={authMode}
+        name={authName}
+        email={authEmail}
+        password={authPassword}
+        busy={authBusy}
+        error={authError}
+        onMode={setAuthMode}
+        onName={setAuthName}
+        onEmail={setAuthEmail}
+        onPassword={setAuthPassword}
+        onSubmit={submitAuthentication}
+      />
+    );
+  }
+
+  if (!activeHome) {
+    return (
+      <main className="home-picker">
+        <section className="home-picker-card">
+          <div className="brand-mark"><span /></div>
+          <h1>{homes.length ? "Choose a home" : "No home access yet"}</h1>
+          <p>
+            {homes.length
+              ? "Select a home to open its devices and activity."
+              : "Ask a home administrator to add your account, then sign in again."}
+          </p>
+          {homes.map((home) => (
+            <button key={home.id} type="button" onClick={() => selectHome(home.id)}>
+              <Home size={17} /> {home.name} <span>{home.role.replaceAll("_", " ")}</span>
+            </button>
+          ))}
+          <button
+            className="home-picker-signout"
+            type="button"
+            onClick={() => {
+              api.setAccessToken(null);
+              api.setHomeId(null);
+              setAuthToken(null);
+              setAuthUser(null);
+              setHomes([]);
+              setSelectedHomeId("");
+            }}
+          >
+            Sign out
+          </button>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -744,12 +1041,22 @@ function App() {
         </a>
         <div className="home-switcher">
           <div className="home-avatar"><Home size={17} /></div>
-          <div><strong>Prince's residence</strong><span>Home profile</span></div>
-          <ChevronDown size={15} />
+          <select
+            aria-label="Select home"
+            value={selectedHomeId}
+            onChange={(event) => selectHome(event.currentTarget.value)}
+          >
+            {homes.map((home) => <option key={home.id} value={home.id}>{home.name}</option>)}
+          </select>
+          {authUser?.role === "ADMIN" && (
+            <button type="button" aria-label="Create home" onClick={() => void createHome()}>
+              <Plus size={16} />
+            </button>
+          )}
         </div>
         <nav aria-label="Main navigation" className="main-nav">
           <span className="nav-caption">WORKSPACE</span>
-          {navItems.map(({ id, label, icon: Icon }) => (
+          {visibleNavItems.map(({ id, label, icon: Icon }) => (
             <button
               className={`nav-item ${section === id ? "selected" : ""}`}
               key={id}
@@ -765,7 +1072,7 @@ function App() {
         <div className="sidebar-bottom">
           <div className="security-note"><Shield size={16} /><span>Local-first controls<br /><strong>Your home, your data</strong></span></div>
           <button className="profile-button" type="button" onClick={() => setSection("settings")}>
-            <span className="profile-avatar">P</span><span><strong>Home owner</strong><small>Personal space</small></span>
+            <span className="profile-avatar">{authUser?.name.slice(0, 1).toUpperCase() ?? "U"}</span><span><strong>{authUser?.name}</strong><small>{authUser?.role.replaceAll("_", " ")}</small></span>
             <Settings size={16} />
           </button>
         </div>
@@ -782,6 +1089,23 @@ function App() {
             <div className={`connection-chip ${wsConnection}`}>
               <span className="tiny-dot" /><span>Live {wsConnection}</span>
             </div>
+            <button
+              className="button secondary"
+              type="button"
+              onClick={() => {
+                api.setAccessToken(null);
+                setAuthToken(null);
+                setAuthUser(null);
+                setAdminUsers([]);
+                setAdminSecuritySettings(null);
+                setActivityRecords([]);
+                setAdminSecurityEvents([]);
+                setSelectedAdminUserId("");
+                setSelectedUserGrants([]);
+              }}
+            >
+              Sign out
+            </button>
             <button
               className={`simulation-chip ${simulation ? "active" : ""}`}
               type="button"
@@ -824,8 +1148,8 @@ function App() {
               query={query}
               onQuery={setQuery}
               onControl={controlDevice}
-              onAdd={() => setShowAddDevice(true)}
-              onDelete={(device) => {
+              onAdd={authUser?.role === "ADMIN" ? () => setShowAddDevice(true) : undefined}
+              onDelete={authUser?.role === "ADMIN" ? (device) => {
                 if (!isSimulated(device) && window.confirm(`Delete ${device.name}?`)) {
                   void api.deleteDevice(device.id).then(() => {
                     setDevices((current) => current.filter((item) => item.id !== device.id));
@@ -834,10 +1158,16 @@ function App() {
                     setToast(error instanceof ApiError ? error.message : "Could not delete device.");
                   });
                 }
-              }}
+              } : undefined}
             />
           )}
-          {section === "activity" && <ActivityPage devices={allDevices} events={events} />}
+          {section === "activity" && <ActivityPage
+            devices={allDevices}
+            events={events}
+            activityRecords={activityRecords}
+            securityEvents={authUser?.role === "ADMIN" ? adminSecurityEvents : []}
+            isAdmin={authUser?.role === "ADMIN"}
+          />}
           {section === "automations" && (
             <AutomationPage
               devices={devices}
@@ -872,6 +1202,24 @@ function App() {
               onRefresh={() => window.location.reload()}
             />
           )}
+          {section === "users" && authUser?.role === "ADMIN" && (
+            <AdminUsersPage
+              users={adminUsers}
+              securitySettings={adminSecuritySettings}
+              devices={devices}
+              selectedUserId={selectedAdminUserId}
+              grants={selectedUserGrants}
+              busy={adminBusy}
+              error={adminError}
+              currentUserId={authUser.id}
+              onSelectUser={setSelectedAdminUserId}
+              onCreate={createAdminUser}
+              onUpdate={(userId, changes) => void updateAdminUser(userId, changes)}
+              onDelete={(user) => void deleteAdminUser(user)}
+              onSaveAccess={(userId, grants) => void saveUserDeviceAccess(userId, grants)}
+              onUpdateRegistration={(enabled) => void updateAdminSecuritySettings(enabled)}
+            />
+          )}
         </div>
       </main>
 
@@ -892,6 +1240,62 @@ function App() {
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
     </div>
+  );
+}
+
+function AuthPage(props: {
+  mode: "login" | "register";
+  name: string;
+  email: string;
+  password: string;
+  busy: boolean;
+  error: string;
+  onMode: (mode: "login" | "register") => void;
+  onName: (name: string) => void;
+  onEmail: (email: string) => void;
+  onPassword: (password: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const [showPassword, setShowPassword] = useState(false);
+
+  return (
+    <main className="auth-page">
+      <form className="auth-card" onSubmit={props.onSubmit}>
+        <span className="brand-mark"><span /></span>
+        <span className="eyebrow">NEXORA HOME INTELLIGENCE</span>
+        <h1>{props.mode === "login" ? "Welcome back" : "Create your account"}</h1>
+        <p>Sign in to securely access your home.</p>
+        {props.mode === "register" && (
+          <label>Name<input value={props.name} onChange={(event) => props.onName(event.target.value)} autoComplete="name" required maxLength={200} /></label>
+        )}
+        <label>Email<input type="email" value={props.email} onChange={(event) => props.onEmail(event.target.value)} autoComplete="email" required maxLength={320} /></label>
+        <label>Password
+          <span className="auth-password-field">
+            <input type={showPassword ? "text" : "password"} value={props.password} onChange={(event) => props.onPassword(event.target.value)} autoComplete={props.mode === "login" ? "current-password" : "new-password"} required minLength={props.mode === "register" ? 8 : 1} maxLength={128} />
+            <button
+              className="auth-password-toggle"
+              type="button"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              onClick={() => setShowPassword((visible) => !visible)}
+            >
+              {showPassword ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+              {showPassword ? "Hide" : "Show"}
+            </button>
+          </span>
+        </label>
+        {props.error && <p className="auth-error" role="alert">{props.error}</p>}
+        <button className="button primary auth-submit" type="submit" disabled={props.busy}>
+          {props.busy ? "Please wait…" : props.mode === "login" ? "Sign in" : "Create account"}
+        </button>
+        <button className="auth-mode" type="button" onClick={() => {
+          setShowPassword(false);
+          props.onMode(props.mode === "login" ? "register" : "login");
+        }}>
+          {props.mode === "login" ? "New to NEXORA? Create an account" : "Already have an account? Sign in"}
+        </button>
+      </form>
+    </main>
   );
 }
 
@@ -998,22 +1402,34 @@ function DevicesPage(props: {
   query: string;
   onQuery: (value: string) => void;
   onControl: (device: AnyDevice) => void;
-  onAdd: () => void;
-  onDelete: (device: AnyDevice) => void;
+  onAdd?: () => void;
+  onDelete?: (device: AnyDevice) => void;
 }) {
   const rooms = [...new Set(props.devices.map((device) => device.room || "Unassigned"))];
   return <>
-    <PageHeading eyebrow="HOME DIRECTORY" title="Your devices" description="Manage connected and simulated devices room by room." action={<button className="button primary" onClick={props.onAdd}><Plus size={16} />Add device</button>} />
+    <PageHeading eyebrow="HOME DIRECTORY" title="Your devices" description="Manage connected and simulated devices room by room." action={props.onAdd && <button className="button primary" onClick={props.onAdd}><Plus size={16} />Add device</button>} />
     <div className="toolbar"><div className="search-field"><Search size={17} /><input value={props.query} onChange={(event) => props.onQuery(event.target.value)} placeholder="Search devices" aria-label="Search devices" /></div><span className="subtle-count">{props.devices.length} devices</span></div>
     {rooms.map((room) => {
       const devices = props.devices.filter((device) => (device.room || "Unassigned") === room);
-      return <section className="room-section" key={room}><div className="room-section-heading"><div className="room-icon"><Home size={17} /></div><div><h2>{room}</h2><span>{devices.length} devices</span></div><span className="room-line" /></div><div className="device-grid">{devices.map((device) => <DeviceCard key={device.id} device={device} onControl={() => props.onControl(device)} onDelete={() => props.onDelete(device)} />)}</div></section>;
+      return <section className="room-section" key={room}><div className="room-section-heading"><div className="room-icon"><Home size={17} /></div><div><h2>{room}</h2><span>{devices.length} devices</span></div><span className="room-line" /></div><div className="device-grid">{devices.map((device) => <DeviceCard key={device.id} device={device} onControl={() => props.onControl(device)} onDelete={props.onDelete ? () => props.onDelete?.(device) : undefined} />)}</div></section>;
     })}
     {!props.devices.length && <EmptyState title="No devices match" detail="Check the search or register a device through the existing API." />}
   </>;
 }
 
-function ActivityPage({ devices, events }: { devices: AnyDevice[]; events: DeviceEvent[] }) {
+function ActivityPage({
+  devices,
+  events,
+  activityRecords,
+  securityEvents,
+  isAdmin,
+}: {
+  devices: AnyDevice[];
+  events: DeviceEvent[];
+  activityRecords: ActivityRecord[];
+  securityEvents: AdminSecurityEvent[];
+  isAdmin: boolean;
+}) {
   const activity = events.slice(0, 25);
   return <>
     <PageHeading eyebrow="REAL-TIME FEED" title="Activity & safety" description="Live events from this session and device connectivity." />
@@ -1026,9 +1442,17 @@ function ActivityPage({ devices, events }: { devices: AnyDevice[]; events: Devic
         })}</div> : <EmptyState title="No recent events" detail="Simulator actions and incoming WebSocket events appear here." />}
       </section>
       <section className="panel safety-panel">
-        <div className="panel-heading"><div><span className="eyebrow">SAFETY CENTER</span><h2>Security events</h2></div><span className="status-pill calm"><Shield size={13} />Clear</span></div>
-        <div className="security-empty"><span><LockKeyhole size={21} /></span><strong>Security event API not available</strong><p>The backend has a security-events model, but no read endpoint yet. Nothing here is represented as live security status.</p></div>
-        <div className="security-foot"><CircleHelp size={14} /> Security history needs a backend endpoint.</div>
+        <div className="panel-heading"><div><span className="eyebrow">SAFETY CENTER</span><h2>Security events</h2></div><span className="subtle-count">{securityEvents.length} events</span></div>
+        {isAdmin ? securityEvents.length ? <div className="timeline">{securityEvents.map((event) => (
+          <div className="timeline-item" key={event.id}><span className="timeline-icon"><Shield size={15} /></span><div><strong>{event.event_type} · {event.severity}</strong><p>{event.source}{event.response ? ` · ${event.response}` : ""}</p></div><time>{formatTime(event.timestamp)}</time></div>
+        ))}</div> : <div className="security-empty"><span><LockKeyhole size={21} /></span><strong>No recorded security events</strong><p>Security events are visible to administrators only.</p></div>
+          : <div className="security-empty"><span><LockKeyhole size={21} /></span><strong>Administrator access required</strong><p>Sensitive security history is restricted.</p></div>}
+      </section>
+      <section className="panel notification-preview">
+        <div className="panel-heading"><div><span className="eyebrow">AUDIT LOG</span><h2>Home activity</h2></div><span className="subtle-count">{activityRecords.length} records</span></div>
+        {activityRecords.length ? <div className="timeline">{activityRecords.map((entry) => (
+          <div className="timeline-item" key={entry.id}><span className="timeline-icon"><Activity size={15} /></span><div><strong>{entry.event.replaceAll("_", " ")}</strong><p>{entry.source}{entry.device_id ? ` · Device ${entry.device_id}` : ""}{entry.user_id ? ` · User ${entry.user_id}` : ""}{entry.action ? ` · ${entry.action}` : ""}</p></div><time>{formatTime(entry.timestamp)}</time></div>
+        ))}</div> : <EmptyState title="No activity records" detail="Recorded activity will appear here." />}
       </section>
       <section className="panel notification-preview">
         <div className="panel-heading"><div><span className="eyebrow">ALERTS</span><h2>Notification center</h2></div><Bell size={17} /></div>
@@ -1139,6 +1563,172 @@ function NoraPage(props: {
       <div className="chat-foot"><span><LockKeyhole size={13} /> {props.voiceStatus} · audio and transcripts are not sent to the NEXORA backend; listening stops when you hide the page</span><span>Try: “Hey Nona, turn on the living room light”</span></div>
     </section>
   </div>;
+}
+
+function AdminUsersPage(props: {
+  users: AdminUser[];
+  securitySettings: AdminSecuritySettings | null;
+  devices: Device[];
+  selectedUserId: string;
+  grants: DeviceGrant[];
+  busy: boolean;
+  error: string;
+  currentUserId: string;
+  onSelectUser: (id: string) => void;
+  onCreate: (event: FormEvent<HTMLFormElement>) => void;
+  onUpdate: (id: string, changes: Partial<Pick<AdminUser, "role" | "is_active">>) => void;
+  onDelete: (user: AdminUser) => void;
+  onSaveAccess: (
+    id: string,
+    grants: Pick<DeviceGrant, "device_id" | "can_control">[],
+  ) => void;
+  onUpdateRegistration: (enabled: boolean) => void;
+}) {
+  const [draftGrants, setDraftGrants] = useState<DeviceGrant[]>([]);
+  useEffect(() => setDraftGrants(props.grants), [props.grants]);
+  const selectedUser = props.users.find((user) => user.id === props.selectedUserId);
+  const draftDirty = JSON.stringify(draftGrants.map(({ device_id, can_control }) => ({
+    device_id,
+    can_control,
+  }))) !== JSON.stringify(props.grants.map(({ device_id, can_control }) => ({
+    device_id,
+    can_control,
+  })));
+
+  function setDeviceVisible(device: Device, visible: boolean) {
+    setDraftGrants((current) => {
+      const existing = current.find((grant) => grant.device_id === device.id);
+      if (!visible) return current.filter((grant) => grant.device_id !== device.id);
+      if (existing) return current;
+      return [...current, {
+        device_id: device.id,
+        can_control: false,
+        name: device.name,
+        room: device.room,
+        device_type: device.device_type,
+      }];
+    });
+  }
+
+  function setDeviceControl(deviceId: string, canControl: boolean) {
+    setDraftGrants((current) => current.map((grant) => grant.device_id === deviceId
+      ? { ...grant, can_control: canControl }
+      : grant));
+  }
+
+  return <>
+    <PageHeading
+      eyebrow="ACCESS CONTROL"
+      title="User management"
+      description="Create accounts, assign roles, and grant access to specific devices."
+    />
+    {props.error && <p className="admin-error" role="alert">{props.error}</p>}
+    <section className="panel admin-panel">
+      <div className="panel-heading"><div><span className="eyebrow">SYSTEM SECURITY</span><h2>Registration policy</h2></div><Shield size={18} /></div>
+      {props.securitySettings ? <>
+        <div className="setting-toggle-row">
+          <div><strong>Public registration</strong><span>New registrations are Standard Users only; Admin roles require an existing Admin.</span></div>
+          <button
+            className={`switch-control ${props.securitySettings.registration_enabled ? "enabled" : ""}`}
+            type="button"
+            role="switch"
+            aria-checked={props.securitySettings.registration_enabled}
+            aria-label="Toggle public registration"
+            disabled={props.busy}
+            onClick={() => props.onUpdateRegistration(!props.securitySettings?.registration_enabled)}
+          ><i /></button>
+        </div>
+        <p className="admin-description">
+          JWT lifetime: {props.securitySettings.access_token_expire_minutes} minutes · signing secret: {props.securitySettings.jwt_secret_configured ? "configured" : "missing"}.
+          CORS and signing secrets remain backend environment settings and are never exposed here.
+        </p>
+      </> : <p className="admin-description">Loading security policy…</p>}
+    </section>
+    <div className="admin-layout">
+      <section className="panel admin-panel">
+        <div className="panel-heading"><div><span className="eyebrow">NEW ACCOUNT</span><h2>Add a user</h2></div><Users size={18} /></div>
+        <form className="admin-create-form" onSubmit={props.onCreate}>
+          <label>Name<input name="name" required maxLength={200} /></label>
+          <label>Email<input name="email" type="email" required maxLength={320} /></label>
+          <label>Temporary password<input name="password" type="password" required minLength={8} maxLength={128} autoComplete="new-password" /></label>
+          <label>Role<select name="role" defaultValue="STANDARD_USER"><option value="ADMIN">Admin</option><option value="STANDARD_USER">Standard user</option><option value="GUEST">Guest</option></select></label>
+          <p>Administrator accounts are assigned by changing a role after account creation.</p>
+          <button className="button primary" type="submit" disabled={props.busy}>Create account</button>
+        </form>
+      </section>
+      <section className="panel admin-panel">
+        <div className="panel-heading"><div><span className="eyebrow">ACCOUNTS</span><h2>Users ({props.users.length})</h2></div><Shield size={18} /></div>
+        <div className="admin-user-list">
+          {props.users.map((user) => (
+            <article className={`admin-user-row ${props.selectedUserId === user.id ? "selected" : ""}`} key={user.id}>
+              <button className="admin-user-select" type="button" onClick={() => props.onSelectUser(user.id)}>
+                <span className="profile-avatar">{user.name.slice(0, 1).toUpperCase()}</span>
+                <span><strong>{user.name}</strong><small>{user.email}</small></span>
+              </button>
+              <label className="admin-role-control">Role
+                <select
+                  aria-label={`Role for ${user.name}`}
+                  value={user.role}
+                  disabled={props.busy || user.id === props.currentUserId}
+                  onChange={(event) => props.onUpdate(user.id, { role: event.target.value as UserRole })}
+                >
+                  <option value="ADMIN">Admin</option>
+                  <option value="STANDARD_USER">Standard user</option>
+                  <option value="GUEST">Guest</option>
+                  <option value="ADMIN">Admin</option>
+                </select>
+              </label>
+              <label className="admin-status-control">
+                <input
+                  type="checkbox"
+                  checked={user.is_active}
+                  disabled={props.busy || user.id === props.currentUserId}
+                  onChange={(event) => props.onUpdate(user.id, { is_active: event.target.checked })}
+                />
+                {user.is_active ? "Active" : "Inactive"}
+              </label>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label={`Remove ${user.name}`}
+                title="Remove user from this home"
+                disabled={props.busy || user.id === props.currentUserId}
+                onClick={() => props.onDelete(user)}
+              >
+                <Trash2 size={15} />
+              </button>
+            </article>
+          ))}
+          {!props.users.length && <EmptyState title="No users found" detail="Create an account to invite a household member." />}
+        </div>
+      </section>
+    </div>
+    {selectedUser && selectedUser.role !== "ADMIN" && (
+      <section className="panel admin-panel access-panel">
+        <div className="panel-heading"><div><span className="eyebrow">DEVICE PERMISSIONS</span><h2>{selectedUser.name}</h2></div><LockKeyhole size={18} /></div>
+        <p className="admin-description">Only selected devices are visible to this user. Control permission is separately selectable.</p>
+        {props.devices.map((device) => {
+          const grant = draftGrants.find((item) => item.device_id === device.id);
+          return <div className="admin-access-row" key={device.id}>
+            <span><strong>{device.name}</strong><small>{device.room || "Unassigned"} · {device.device_type}</small></span>
+            <label><input type="checkbox" checked={Boolean(grant)} onChange={(event) => setDeviceVisible(device, event.target.checked)} /> Visible</label>
+            <label><input type="checkbox" checked={grant?.can_control ?? false} disabled={!grant} onChange={(event) => setDeviceControl(device.id, event.target.checked)} /> Can control</label>
+          </div>;
+        })}
+        <button
+          className="button primary"
+          type="button"
+          disabled={props.busy || !draftDirty}
+          onClick={() => props.onSaveAccess(
+            selectedUser.id,
+            draftGrants.map(({ device_id, can_control }) => ({ device_id, can_control })),
+          )}
+        >
+          Save device permissions
+        </button>
+      </section>
+    )}
+  </>;
 }
 
 function SettingsPage(props: {

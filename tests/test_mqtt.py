@@ -16,10 +16,17 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.db.dependencies import get_db_session
 from app.db.models import Device
+from app.db.models import DeviceAccess
 from app.services.mqtt import INBOUND_TOPICS
 from app.services.mqtt import MQTTService
 from app.services.mqtt import MQTTServiceUnavailableError
 from app.main import app
+from tests.auth_helpers import make_current_user_admin
+from tests.auth_helpers import register_user
+from app.db.models import User
+from app.db.models import Home
+from app.db.models import HomeMembership
+from app.db.models import HomeRole
 
 
 class FakeMQTTClient:
@@ -175,16 +182,32 @@ def test_inbound_messages_update_existing_models_and_broadcast(
     engine, _database_url = isolated_db
     device_id = uuid4()
     with Session(engine) as session:
-        session.add(Device(id=device_id, name="ESP32", device_type="sensor"))
+        user = User(name="MQTT Owner", email="mqtt@example.com", password_hash="unused")
+        session.add(user)
+        session.flush()
+        home = Home(name="MQTT Home")
+        session.add(home)
+        session.flush()
+        session.add(HomeMembership(user_id=user.id, home_id=home.id, role=HomeRole.ADMIN))
+        session.add(
+            Device(
+                id=device_id,
+                home_id=home.id,
+                owner_user_id=user.id,
+                name="ESP32",
+                device_type="sensor",
+            )
+        )
+        session.add(DeviceAccess(user_id=user.id, device_id=device_id, can_control=True))
         session.commit()
 
     broadcasts: list[dict[str, object]] = []
 
-    async def capture_broadcast(event: dict[str, object]) -> None:
+    async def capture_broadcast(_home_id, _user_ids, event: dict[str, object]) -> None:
         broadcasts.append(event)
 
     monkeypatch.setattr(
-        "app.services.mqtt.connection_manager.broadcast",
+        "app.services.mqtt.connection_manager.broadcast_to_home_users",
         capture_broadcast,
     )
     service = MQTTService(Settings())
@@ -246,11 +269,11 @@ def test_invalid_or_unknown_inbound_messages_are_not_broadcast(
 ) -> None:
     broadcasts: list[dict[str, object]] = []
 
-    async def capture_broadcast(event: dict[str, object]) -> None:
+    async def capture_broadcast(_user_id: UUID, event: dict[str, object]) -> None:
         broadcasts.append(event)
 
     monkeypatch.setattr(
-        "app.services.mqtt.connection_manager.broadcast",
+        "app.services.mqtt.connection_manager.broadcast_to_user",
         capture_broadcast,
     )
     service = MQTTService(Settings())
@@ -302,10 +325,14 @@ def command_api(
     app.dependency_overrides[get_mqtt_service] = lambda: AvailableMQTTService()
     try:
         with TestClient(app) as client:
+            _token, user_id = register_user(client)
+            make_current_user_admin(client, session_factory)
             with Session(engine) as session:
                 session.add(
                     Device(
                         id=device_id,
+                        home_id=UUID(client.headers["X-Home-ID"]),
+                        owner_user_id=user_id,
                         name="ESP32",
                         device_type="light",
                     )

@@ -9,6 +9,61 @@ import {
 } from "./voice";
 
 describe("shared API contract", () => {
+  it("uses the authentication, membership, and protected endpoint contracts", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({
+        access_token: "unit-test-token",
+        token_type: "bearer",
+        expires_in: 1800,
+        user: {
+          id: "user-1",
+          name: "Test User",
+          email: "test@example.com",
+          role: "STANDARD_USER",
+          is_active: true,
+          is_platform_admin: false,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const api = new NexoraApi("http://backend.test", fetcher as typeof fetch);
+    const registration = {
+      name: "Test User",
+      email: "test@example.com",
+      password: "a secure test password",
+    };
+    await api.register(registration);
+    await api.login({ email: registration.email, password: registration.password });
+    api.setAccessToken("unit-test-token");
+    const homes = [{ id: "home-1", name: "Test Home", role: "STANDARD_USER" as const }];
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify(homes), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await api.listHomes();
+    api.setHomeId("home-1");
+    fetcher.mockResolvedValueOnce(new Response("[]", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await api.listDevices();
+
+    expect(fetcher.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
+      ["http://backend.test/auth/register", "POST"],
+      ["http://backend.test/auth/login", "POST"],
+      ["http://backend.test/homes", "GET"],
+      ["http://backend.test/devices", "GET"],
+    ]);
+    expect(fetcher.mock.calls[0][1]?.body).toBe(JSON.stringify(registration));
+    expect(fetcher.mock.calls[1][1]?.body).toBe(JSON.stringify({
+      email: registration.email,
+      password: registration.password,
+    }));
+    expect(new Headers(fetcher.mock.calls[3][1]?.headers).get("Authorization"))
+      .toBe("Bearer unit-test-token");
+    expect(new Headers(fetcher.mock.calls[3][1]?.headers).get("X-Home-ID"))
+      .toBe("home-1");
+  });
+
   it("uses only existing device endpoints", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const status = init?.method === "DELETE" ? 204 : 200;

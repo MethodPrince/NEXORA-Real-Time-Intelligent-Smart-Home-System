@@ -20,20 +20,62 @@ class MockSpeechRecognition {
 }
 
 class MockWebSocket {
+  static instances: MockWebSocket[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
   onclose: (() => void) | null = null;
   close = vi.fn();
 
-  constructor(_url: string) {
+  constructor(_url: string, _protocols?: string[]) {
+    MockWebSocket.instances.push(this);
     queueMicrotask(() => this.onopen?.());
   }
+}
+
+async function renderAuthenticatedApp() {
+  const fetcher = vi.mocked(fetch);
+  const existingFetch = fetcher.getMockImplementation();
+  fetcher.mockImplementation((input, init) => {
+    if (String(input).endsWith("/auth/login")) {
+      return Promise.resolve(new Response(JSON.stringify({
+        access_token: "test-access-token",
+        token_type: "bearer",
+        expires_in: 1800,
+        user: {
+          id: "test-user",
+          name: "Prince",
+          email: "prince@example.com",
+          role: "ADMIN",
+          is_active: true,
+          is_platform_admin: true,
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    if (String(input).endsWith("/homes")) {
+      return Promise.resolve(new Response(JSON.stringify([
+        { id: "test-home", name: "Test Home", role: "ADMIN" },
+      ]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    return existingFetch
+      ? existingFetch(input, init)
+      : Promise.resolve(new Response("[]", { status: 200 }));
+  });
+  render(<App />);
+  fireEvent.change(screen.getByLabelText("Email"), { target: { value: "prince@example.com" } });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a secure password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("heading", { name: /good (morning|afternoon|evening)/i })).toBeInTheDocument();
 }
 
 describe("NEXORA dashboard", () => {
   beforeEach(() => {
     MockSpeechRecognition.instances = [];
+    MockWebSocket.instances = [];
     vi.stubGlobal("SpeechRecognition", undefined);
     vi.stubGlobal("webkitSpeechRecognition", undefined);
     vi.stubGlobal("WebSocket", MockWebSocket);
@@ -44,6 +86,8 @@ describe("NEXORA dashboard", () => {
         return new Response(
           JSON.stringify(url.endsWith("/health")
             ? { status: "ok", service: "NEXORA", database: "connected" }
+            : url.endsWith("/homes")
+              ? [{ id: "test-home", name: "Test Home", role: "ADMIN" }]
             : []),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -57,8 +101,27 @@ describe("NEXORA dashboard", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows local demo devices and controls them without API writes", async () => {
+  it("allows password visibility to be toggled on login and registration forms", () => {
     render(<App />);
+    const password = screen.getByLabelText("Password") as HTMLInputElement;
+
+    expect(password.type).toBe("password");
+    fireEvent.change(password, { target: { value: "my secure password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(password.type).toBe("text");
+    expect(password.value).toBe("my secure password");
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide password" }));
+    expect(password.type).toBe("password");
+    fireEvent.click(screen.getByRole("button", { name: "New to NEXORA? Create an account" }));
+    expect(password.type).toBe("password");
+    fireEvent.click(screen.getByRole("button", { name: "Show password" }));
+    expect(password.type).toBe("text");
+    expect(password.value).toBe("my secure password");
+  });
+
+  it("shows local demo devices and controls them without API writes", async () => {
+    await renderAuthenticatedApp();
     expect(screen.getByRole("heading", { name: /good (morning|afternoon|evening)/i })).toBeInTheDocument();
     expect(screen.getAllByText("Ambient light").length).toBeGreaterThan(0);
 
@@ -69,10 +132,46 @@ describe("NEXORA dashboard", () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("/command"))).toBe(false);
   });
 
-  it("updates the greeting from the local time while the dashboard is open", () => {
+  it("does not open a WebSocket before a home is selected", async () => {
+    vi.mocked(fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith("/auth/login")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          access_token: "test-access-token",
+          token_type: "bearer",
+          expires_in: 1800,
+          user: {
+            id: "test-user",
+            name: "Prince",
+            email: "prince@example.com",
+            role: "STANDARD_USER",
+            is_active: true,
+            is_platform_admin: false,
+          },
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.endsWith("/homes")) {
+        return Promise.resolve(new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+      }
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    });
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "prince@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a secure password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("heading", { name: "No home access yet" })).toBeInTheDocument();
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it("updates the greeting from the local time while the dashboard is open", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 9, 23, 8));
-    render(<App />);
+    await renderAuthenticatedApp();
 
     expect(screen.getByRole("heading", { name: "Good morning, Prince" })).toBeInTheDocument();
 
@@ -123,7 +222,7 @@ describe("NEXORA dashboard", () => {
     });
     vi.stubGlobal("fetch", fetcher);
 
-    render(<App />);
+    await renderAuthenticatedApp();
     fireEvent.click(await screen.findByRole("button", { name: "Turn on Backend lamp" }));
 
     expect(await screen.findByText("On · brightness 80%")).toBeInTheDocument();
@@ -139,7 +238,7 @@ describe("NEXORA dashboard", () => {
       throw new Error("Backend unavailable");
     }));
 
-    render(<App />);
+    await renderAuthenticatedApp();
 
     expect(await screen.findByText("API offline")).toBeInTheDocument();
     expect(screen.getAllByText("Ambient light").length).toBeGreaterThan(0);
@@ -149,7 +248,7 @@ describe("NEXORA dashboard", () => {
 
   it("starts wake-word listening on the home page and runs a spoken command", async () => {
     vi.stubGlobal("SpeechRecognition", MockSpeechRecognition);
-    render(<App />);
+    await renderAuthenticatedApp();
 
     const recognition = MockSpeechRecognition.instances[0];
     expect(recognition.start).toHaveBeenCalledOnce();
@@ -165,9 +264,9 @@ describe("NEXORA dashboard", () => {
     expect(await screen.findByText(/Ambient light turned off in the local demo/)).toBeInTheDocument();
   });
 
-  it("reports when speech is not recognized or no speech is heard", () => {
+  it("reports when speech is not recognized or no speech is heard", async () => {
     vi.stubGlobal("SpeechRecognition", MockSpeechRecognition);
-    render(<App />);
+    await renderAuthenticatedApp();
 
     const recognition = MockSpeechRecognition.instances[0];
     act(() => {
@@ -186,7 +285,7 @@ describe("NEXORA dashboard", () => {
 
   it("waits for a command after hearing a wake phrase by itself", async () => {
     vi.stubGlobal("SpeechRecognition", MockSpeechRecognition);
-    render(<App />);
+    await renderAuthenticatedApp();
     fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
 
     const recognition = MockSpeechRecognition.instances[0];
@@ -208,7 +307,7 @@ describe("NEXORA dashboard", () => {
   });
 
   it("responds when greeted as Method", async () => {
-    render(<App />);
+    await renderAuthenticatedApp();
     fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Message NORA" }), {
@@ -221,7 +320,7 @@ describe("NEXORA dashboard", () => {
   });
 
   it("offers typed commands when browser speech recognition is unavailable", async () => {
-    render(<App />);
+    await renderAuthenticatedApp();
     fireEvent.click(screen.getAllByRole("button", { name: "NORA assistant" })[0]);
 
     expect((await screen.findAllByText(/isn’t supported by this browser/i)).length).toBeGreaterThan(0);
@@ -280,7 +379,7 @@ describe("NEXORA dashboard", () => {
       });
     });
     vi.stubGlobal("fetch", fetcher);
-    render(<App />);
+    await renderAuthenticatedApp();
     fireEvent.click(screen.getAllByRole("button", { name: "Automations" })[0]);
 
     expect(await screen.findByRole("heading", { name: "Create an automation" })).toBeInTheDocument();

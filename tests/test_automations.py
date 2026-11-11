@@ -15,12 +15,19 @@ from app.core.config import Settings
 from app.db.base import Base
 from app.db.dependencies import get_db_session
 from app.db.models import AutomationRule
+from app.db.models import DeviceAccess
 from app.db.models import Device
+from app.db.models import Home
+from app.db.models import HomeMembership
+from app.db.models import HomeRole
 from app.main import app
 from app.services.automation_scheduler import AutomationScheduler
 from app.services.automation_scheduler import next_run_time
 from app.services.mqtt import MQTTService
 from app.services.simulator import simulated_state
+from tests.auth_helpers import make_current_user_admin
+from tests.auth_helpers import register_user
+from app.db.models import User
 
 
 @pytest.fixture
@@ -44,6 +51,8 @@ def automation_db(tmp_path) -> Generator[sessionmaker[Session], None, None]:
 @pytest.fixture
 def client(automation_db) -> Generator[TestClient, None, None]:
     with TestClient(app) as test_client:
+        register_user(test_client)
+        make_current_user_admin(test_client, automation_db)
         yield test_client
 
 
@@ -166,28 +175,54 @@ def test_next_run_time_uses_configured_timezone() -> None:
 def test_scheduler_runs_due_simulated_device_action(automation_db) -> None:
     factory = automation_db
     due = datetime.now(UTC) - timedelta(minutes=1)
-    device = Device(
-        id=uuid4(),
-        name="Scheduled light",
-        room="Office",
-        device_type="smart_light",
-        status="simulator:{\"power\":false,\"brightness\":100}",
-        online=True,
-    )
-    rule = AutomationRule(
-        name="Turn on office light",
-        trigger_conditions={
-            "type": "schedule",
-            "time": "07:30",
-            "timezone": "UTC",
-            "days": [0, 1, 2, 3, 4, 5, 6],
-        },
-        actions=[{"device_id": str(device.id), "command": "turn_on"}],
-        enabled=True,
-        next_run_at=due,
-    )
     with factory() as session:
-        session.add_all([device, rule])
+        user = User(
+            name="Scheduler Owner",
+            email="scheduler@example.com",
+            password_hash="unused",
+        )
+        session.add(user)
+        session.flush()
+        home = Home(name="Scheduler Home")
+        session.add(home)
+        session.flush()
+        session.add(
+            HomeMembership(
+                user_id=user.id,
+                home_id=home.id,
+                role=HomeRole.ADMIN,
+            )
+        )
+        device = Device(
+            id=uuid4(),
+            home_id=home.id,
+            owner_user_id=user.id,
+            name="Scheduled light",
+            room="Office",
+            device_type="smart_light",
+            status="simulator:{\"power\":false,\"brightness\":100}",
+            online=True,
+        )
+        access = DeviceAccess(
+            user_id=user.id,
+            device_id=device.id,
+            can_control=True,
+        )
+        rule = AutomationRule(
+            home_id=home.id,
+            owner_user_id=user.id,
+            name="Turn on office light",
+            trigger_conditions={
+                "type": "schedule",
+                "time": "07:30",
+                "timezone": "UTC",
+                "days": [0, 1, 2, 3, 4, 5, 6],
+            },
+            actions=[{"device_id": str(device.id), "command": "turn_on"}],
+            enabled=True,
+            next_run_at=due,
+        )
+        session.add_all([device, access, rule])
         session.commit()
 
     scheduler = AutomationScheduler(MQTTService(Settings()), factory)

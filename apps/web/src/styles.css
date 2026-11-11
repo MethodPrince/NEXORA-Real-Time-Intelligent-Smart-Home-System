@@ -30,6 +30,51 @@ body { margin: 0; min-width: 360px; min-height: 100vh; }
 button, input { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible { outline: 3px solid rgba(0, 160, 214, .35); outline-offset: 2px; }
+.auth-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--charcoal); }
+.auth-card { width: min(100%, 420px); display: grid; gap: 16px; padding: 34px; border: 1px solid var(--border); border-radius: 20px; background: var(--paper); box-shadow: var(--shadow); }
+.auth-card > .brand-mark { margin-bottom: 4px; }
+.auth-card h1, .auth-card p { margin: 0; }
+.auth-card h1 { font-family: Manrope, sans-serif; font-size: 27px; }
+.auth-card > p { color: var(--muted); font-size: 13px; }
+.auth-card label { display: grid; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.auth-card input { width: 100%; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: #fff; color: #18181b; caret-color: #18181b; }
+.auth-password-field { position: relative; display: block; }
+.auth-password-field input { padding-right: 72px; }
+.auth-password-toggle { position: absolute; top: 50%; right: 10px; display: inline-flex; align-items: center; gap: 5px; padding: 4px; transform: translateY(-50%); border: 0; background: transparent; color: #4b5563; cursor: pointer; font-size: 11px; }
+.auth-password-toggle:hover { color: #18181b; }
+.auth-card .auth-error { color: var(--red); }
+.auth-submit { justify-content: center; min-height: 42px; }
+.auth-mode { border: 0; background: transparent; color: var(--blue); cursor: pointer; font-size: 12px; }
+.admin-layout { display: grid; grid-template-columns: minmax(260px, .75fr) minmax(0, 1.5fr); gap: 16px; }
+.admin-panel { min-width: 0; padding: 20px; margin-bottom: 16px; }
+.admin-create-form { display: grid; gap: 12px; }
+.admin-create-form label, .admin-role-control { display: grid; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.admin-create-form input, .admin-create-form select, .admin-role-control select { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: white; color: var(--ink); }
+.admin-create-form p, .admin-description { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.admin-error { padding: 11px 13px; border: 1px solid #f1d2cd; border-radius: 9px; color: var(--red); background: #fff7f5; font-size: 12px; }
+.admin-user-list { display: grid; gap: 8px; }
+.admin-user-row { display: grid; grid-template-columns: minmax(150px, 1fr) 145px 90px 36px; gap: 12px; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+.admin-user-row.selected { border-color: #9bdde7; background: #f5fcfd; }
+.admin-user-select { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.admin-user-select > span:last-child { min-width: 0; }
+.admin-user-select strong, .admin-user-select small, .admin-access-row strong, .admin-access-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-user-select strong, .admin-access-row strong { color: var(--ink); font-size: 11px; }
+.admin-user-select small, .admin-access-row small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.admin-status-control, .admin-access-row label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.admin-status-control input, .admin-access-row input { accent-color: var(--blue); }
+.access-panel { margin-top: 16px; }
+.access-panel > .panel-heading { margin-bottom: 8px; }
+.access-panel > .admin-description { margin-bottom: 12px; }
+.admin-access-row { display: grid; grid-template-columns: 1fr 100px 120px; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.access-panel > .button { margin-top: 16px; }
+@media (max-width: 950px) {
+  .admin-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .admin-user-row { grid-template-columns: 1fr 36px; }
+  .admin-user-row .admin-role-control, .admin-user-row .admin-status-control { grid-column: 1 / -1; }
+  .admin-access-row { grid-template-columns: 1fr 90px 105px; }
+}
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); background: var(--paper); }
 .sidebar { height: 100vh; position: sticky; top: 0; padding: 24px 15px 18px; display: flex; flex-direction: column; background: var(--charcoal); color: #eff7fc; border-right: 1px solid rgba(180, 215, 240, .1); overflow-y: auto; }
@@ -39,7 +84,16 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(0, 160, 214,
 .brand-mark span { width: 13px; height: 13px; border: 2px solid #62e4ff; transform: rotate(45deg); box-shadow: 0 0 9px rgba(98,228,255,.7); }
 .home-switcher { display: flex; gap: 10px; align-items: center; padding: 11px 10px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.035); border-radius: 13px; margin: 0 1px 30px; }
 .home-avatar { width: 32px; height: 32px; display: grid; place-items: center; color: #77dff8; border-radius: 10px; background: rgba(0,200,232,.11); }
-.home-switcher div:nth-child(2) { flex: 1; min-width: 0; }
+.home-switcher select { flex: 1; min-width: 0; border: 0; outline: 0; color: #eff7fc; background: transparent; font-size: 11px; font-weight: 700; }
+.home-switcher select option { color: #14212d; }
+.home-switcher > button { border: 0; background: transparent; color: #8ea4b4; cursor: pointer; }
+.home-picker { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f3f7fa; }
+.home-picker-card { width: min(100%, 430px); padding: 32px; border: 1px solid #e1e9ef; border-radius: 20px; background: white; box-shadow: 0 18px 55px rgba(17, 40, 58, .12); }
+.home-picker-card h1 { margin: 20px 0 8px; color: var(--ink); font: 700 24px Manrope, sans-serif; }
+.home-picker-card p { margin: 0 0 20px; color: #71808d; font-size: 13px; line-height: 1.6; }
+.home-picker-card > button { width: 100%; display: flex; align-items: center; gap: 10px; margin-top: 9px; padding: 13px; border: 1px solid #e2eaf0; border-radius: 11px; background: #f8fbfd; color: var(--ink); text-align: left; cursor: pointer; }
+.home-picker-card > button span { margin-left: auto; color: #71808d; font-size: 10px; }
+.home-picker-card > .home-picker-signout { justify-content: center; border: 0; background: transparent; color: #71808d; }
 .home-switcher strong, .home-switcher span { display: block; }
 .home-switcher strong { font-size: 11px; white-space: nowrap; }
 .home-switcher span { color: #8ea4b4; font-size: 10px; margin-top: 3px; }

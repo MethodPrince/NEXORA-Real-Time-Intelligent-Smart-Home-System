@@ -5,6 +5,7 @@ from datetime import datetime
 from datetime import time
 from datetime import timedelta
 from zoneinfo import ZoneInfo
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy import update
@@ -13,8 +14,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import get_settings
+from app.db.dependencies import device_recipients
 from app.db.models import AutomationRule
 from app.db.models import Device
+from app.db.models import User
 from app.db.session import get_engine
 from app.services.mqtt import MQTTService
 from app.services.mqtt import MQTTServiceUnavailableError
@@ -26,6 +29,7 @@ from app.services.simulator import encode_state
 from app.services.simulator import is_simulated
 from app.services.simulator import simulated_state
 from app.websocket.connection_manager import connection_manager
+from app.db.dependencies import user_can_access_device
 
 logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 15
@@ -100,7 +104,14 @@ class AutomationScheduler:
             try:
                 events = await asyncio.to_thread(self._run_due_rules)
                 for event in events:
-                    await connection_manager.broadcast(event)
+                    recipient_ids = event.pop("_recipient_user_ids", [])
+                    home_id = event.pop("_home_id", None)
+                    if recipient_ids and home_id:
+                        await connection_manager.broadcast_to_home_users(
+                            UUID(home_id),
+                            (UUID(user_id) for user_id in recipient_ids),
+                            event,
+                        )
             except SQLAlchemyError:
                 logger.exception("Automation scheduler database operation failed")
             except Exception:
@@ -120,17 +131,19 @@ class AutomationScheduler:
                 session.scalars(
                     select(AutomationRule.id).where(
                         AutomationRule.enabled.is_(True),
+                        AutomationRule.owner_user_id.is_not(None),
                         AutomationRule.next_run_at <= now,
                     )
                 )
             )
-            claimed: list[tuple[str, str, list[dict[str, object]]]] = []
+            claimed: list[tuple[str, str, list[dict[str, object]], UUID, UUID]] = []
             for rule_id in due_ids:
                 result = session.execute(
                     update(AutomationRule)
                     .where(
                         AutomationRule.id == rule_id,
                         AutomationRule.enabled.is_(True),
+                        AutomationRule.owner_user_id.is_not(None),
                         AutomationRule.next_run_at <= now,
                     )
                     .values(
@@ -142,9 +155,15 @@ class AutomationScheduler:
                         AutomationRule.name,
                         AutomationRule.trigger_conditions,
                         AutomationRule.actions,
+                        AutomationRule.owner_user_id,
+                        AutomationRule.home_id,
                     )
                 ).one_or_none()
-                if result is None:
+                if (
+                    result is None
+                    or result.owner_user_id is None
+                    or result.home_id is None
+                ):
                     continue
                 next_time = next_run_time(result.trigger_conditions, now)
                 session.execute(
@@ -153,19 +172,34 @@ class AutomationScheduler:
                     .values(next_run_at=next_time, last_error=None)
                 )
                 action = result.actions[0]
-                claimed.append((str(result.id), result.name, [action]))
+                claimed.append(
+                    (
+                        str(result.id),
+                        result.name,
+                        [action],
+                        result.owner_user_id,
+                        result.home_id,
+                    )
+                )
             session.commit()
 
         events: list[dict[str, object]] = []
-        for rule_id, name, actions in claimed:
+        for rule_id, name, actions, owner_id, home_id in claimed:
             action = actions[0]
             try:
-                event = self._execute_action(rule_id, name, action)
+                event = self._execute_action(
+                    rule_id,
+                    name,
+                    action,
+                    owner_id,
+                    home_id,
+                )
             except (ValueError, InvalidSimulatedCommandError, MQTTServiceUnavailableError) as error:
                 self._record_error(rule_id, str(error))
                 logger.warning("Automation %s could not run: %s", rule_id, error)
                 events.append({
                     "type": "automation_failed",
+                    "_home_id": str(home_id),
                     "automation_id": rule_id,
                     "name": name,
                     "message": str(error),
@@ -176,12 +210,21 @@ class AutomationScheduler:
                 logger.exception("Automation %s database operation failed", rule_id)
                 events.append({
                     "type": "automation_failed",
+                    "_home_id": str(home_id),
                     "automation_id": rule_id,
                     "name": name,
                     "message": "Database operation unavailable",
                     "timestamp": datetime.now(UTC).isoformat(),
                 })
             else:
+                device_id = UUID(str(action["device_id"]))
+                with self._session() as session:
+                    device_home_id, recipient_ids = device_recipients(session, device_id)
+                for item in event:
+                    item["_recipient_user_ids"] = [
+                        str(user_id) for user_id in recipient_ids
+                    ]
+                    item["_home_id"] = str(device_home_id or home_id)
                 events.extend(event)
         return events
 
@@ -190,13 +233,30 @@ class AutomationScheduler:
         rule_id: str,
         name: str,
         action: dict[str, object],
+        owner_id: UUID,
+        home_id: UUID,
     ) -> list[dict[str, object]]:
-        from uuid import UUID
-
         with self._session() as session:
-            device = session.get(Device, UUID(str(action["device_id"])))
-            if device is None:
-                raise ValueError("Automation device no longer exists")
+            owner = session.get(User, owner_id)
+            device = session.scalar(
+                select(Device).where(
+                    Device.id == UUID(str(action["device_id"])),
+                    Device.home_id == home_id,
+                )
+            )
+            if (
+                owner is None
+                or not owner.is_active
+                or device is None
+                or not user_can_access_device(
+                    session,
+                    owner,
+                    UUID(str(action["device_id"])),
+                    control=True,
+                    home_id=home_id,
+                )
+            ):
+                raise ValueError("Automation device is no longer permitted")
             if not device.online:
                 raise ValueError(f"{device.name} is offline")
             command, parameters = _device_command(device, str(action["command"]))

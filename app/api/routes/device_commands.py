@@ -6,13 +6,19 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 from fastapi import Request
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.schemas.mqtt import DeviceCommandAccepted
 from app.api.schemas.mqtt import DeviceCommandRequest
 from app.db.dependencies import get_db_session
+from app.db.dependencies import device_recipients
+from app.db.dependencies import user_can_access_device
+from app.db.dependencies import HomeAccess
+from app.db.dependencies import get_current_home
 from app.db.models import Device
+from app.services.security_events import record_security_event
 from app.services.mqtt import MQTTService
 from app.services.mqtt import MQTTServiceUnavailableError
 from app.services.simulator import InvalidSimulatedCommandError
@@ -41,19 +47,43 @@ def get_mqtt_service(request: Request) -> MQTTService:
 )
 async def publish_device_command(
     device_id: UUID,
+    request: Request,
     command_data: DeviceCommandRequest,
     session: Annotated[Session, Depends(get_db_session)],
     mqtt_service: Annotated[MQTTService, Depends(get_mqtt_service)],
+    access: Annotated[HomeAccess, Depends(get_current_home)],
 ) -> DeviceCommandAccepted:
     try:
-        device = session.get(Device, device_id)
+        device = session.scalar(
+            select(Device).where(
+                Device.id == device_id,
+                Device.home_id == access.home.id,
+            )
+        )
     except SQLAlchemyError as error:
         logger.exception("Unable to look up device for MQTT command")
         raise HTTPException(
             status_code=503,
             detail="Database operation unavailable",
         ) from error
-    if device is None:
+    if device is None or not user_can_access_device(
+        session,
+        access.user,
+        device_id,
+        control=True,
+        home_id=access.home.id,
+    ):
+        record_security_event(
+            session,
+            event_type="device_control_denied",
+            severity="warning",
+            source="/devices/{device_id}/command",
+            outcome="denied",
+            user_id=access.user.id,
+            home_id=access.home.id,
+            request=request,
+            metadata={"device_id": str(device_id), "command": command_data.command},
+        )
         raise HTTPException(status_code=404, detail="Device not found")
 
     if is_simulated(device):
@@ -100,7 +130,13 @@ async def publish_device_command(
             "state": state,
             "timestamp": device.updated_at.isoformat(),
         }
-        await connection_manager.broadcast(event)
+        home_id, recipient_ids = device_recipients(session, device_id)
+        if home_id is not None:
+            await connection_manager.broadcast_to_home_users(
+                home_id,
+                recipient_ids,
+                event,
+            )
         return DeviceCommandAccepted(
             device_id=device_id,
             status="applied",
