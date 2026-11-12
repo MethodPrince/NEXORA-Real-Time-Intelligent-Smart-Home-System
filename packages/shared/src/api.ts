@@ -137,6 +137,10 @@ export class NexoraApi {
     });
   }
 
+  async deleteHome(id: string): Promise<void> {
+    await this.request(`/homes/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
   async register(input: { name: string; email: string; password: string }): Promise<AuthResponse> {
     return this.request("/auth/register", {
       method: "POST",

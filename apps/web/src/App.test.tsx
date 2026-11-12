@@ -120,6 +120,59 @@ describe("NEXORA dashboard", () => {
     expect(password.value).toBe("my secure password");
   });
 
+  it("deletes the selected home and switches to another accessible home", async () => {
+    let homes = [
+      { id: "test-home", name: "Test Home", role: "ADMIN" },
+      { id: "second-home", name: "Second Home", role: "ADMIN" },
+    ];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/auth/login")) {
+        return new Response(JSON.stringify({
+          access_token: "test-access-token",
+          token_type: "bearer",
+          expires_in: 1800,
+          user: {
+            id: "test-user",
+            name: "Prince",
+            email: "prince@example.com",
+            role: "ADMIN",
+            is_active: true,
+            is_platform_admin: true,
+          },
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/homes") && init?.method !== "DELETE") {
+        return new Response(JSON.stringify(homes), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/second-home") && init?.method === "DELETE") {
+        homes = homes.filter((home) => home.id !== "second-home");
+        return new Response(null, { status: 204 });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "prince@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a secure password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Second Home/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Second Home" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Select home")).toHaveValue("test-home");
+      expect(screen.queryByRole("option", { name: "Second Home" })).not.toBeInTheDocument();
+    });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Delete Test Home" })).toBeDisabled();
+    confirm.mockRestore();
+  });
+
   it("shows local demo devices and controls them without API writes", async () => {
     await renderAuthenticatedApp();
     expect(screen.getByRole("heading", { name: /good (morning|afternoon|evening)/i })).toBeInTheDocument();

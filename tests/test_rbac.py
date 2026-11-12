@@ -13,7 +13,14 @@ from app.core.config import get_settings
 from app.db.dependencies import get_db_session
 from app.db.models import User
 from app.db.models import UserRole
+from app.db.models import ActivityLog
+from app.db.models import AutomationRule
+from app.db.models import Device
+from app.db.models import DeviceAccess
+from app.db.models import Home
 from app.db.models import HomeMembership
+from app.db.models import SecurityEvent
+from app.db.models import Sensor
 from app.main import app
 from app.services.bootstrap import create_first_admin
 from app.services.auth import create_access_token
@@ -213,6 +220,85 @@ def test_admin_controls_registration_and_standard_users_cannot(rbac_context) -> 
         "/admin/security-settings",
         json={"registration_enabled": True},
     ).status_code == 403
+
+
+def test_admin_can_delete_selected_home_and_its_data_but_not_last_home(rbac_context) -> None:
+    client, factory = rbac_context
+    admin = create_admin(client, factory)
+    original_home_id = UUID(client.headers["X-Home-ID"])
+    created_home = client.post("/homes", json={"name": "Second Home"})
+    assert created_home.status_code == 201
+    home_id = UUID(created_home.json()["id"])
+
+    assert client.delete(f"/homes/{home_id}").status_code == 404
+    client.headers.update({"X-Home-ID": str(home_id)})
+    member_response = client.post(
+        "/admin/users",
+        json={
+            "name": "Family Member",
+            "email": "family@example.com",
+            "password": "a sufficiently long password",
+            "role": "STANDARD_USER",
+        },
+    )
+    assert member_response.status_code == 201
+    member_id = UUID(member_response.json()["id"])
+
+    with factory() as session:
+        device = Device(
+            home_id=home_id,
+            name="Second Home Lamp",
+            device_type="smart_light",
+        )
+        session.add(device)
+        session.flush()
+        session.add_all(
+            [
+                Sensor(
+                    name="Temperature",
+                    sensor_type="temperature",
+                    device_id=device.id,
+                ),
+                DeviceAccess(user_id=member_id, device_id=device.id),
+                AutomationRule(home_id=home_id, name="Evening lights"),
+                ActivityLog(
+                    home_id=home_id,
+                    user_id=member_id,
+                    device_id=device.id,
+                    source="test",
+                    event="device_created",
+                ),
+            ]
+        )
+        session.commit()
+        device_id = device.id
+
+    deleted = client.delete(f"/homes/{home_id}")
+    assert deleted.status_code == 204
+    assert client.get("/homes").json() == [
+        {"id": str(original_home_id), "name": "NEXORA Home", "role": "ADMIN"}
+    ]
+
+    with factory() as session:
+        assert session.get(Home, home_id) is None
+        assert session.get(Device, device_id) is None
+        assert session.query(Sensor).filter_by(device_id=device_id).count() == 0
+        assert session.query(DeviceAccess).filter_by(device_id=device_id).count() == 0
+        assert session.query(AutomationRule).filter_by(home_id=home_id).count() == 0
+        assert session.query(ActivityLog).filter_by(home_id=home_id).count() == 0
+        assert session.get(User, member_id) is not None
+        assert session.query(HomeMembership).filter_by(home_id=home_id).count() == 0
+        deletion_event = (
+            session.query(SecurityEvent)
+            .filter_by(event_type="home_deleted", user_id=admin.id)
+            .one()
+        )
+        assert deletion_event.home_id is None
+        assert deletion_event.metadata_json["home_id"] == str(home_id)
+        assert deletion_event.metadata_json["home_name"] == "Second Home"
+
+    client.headers.update({"X-Home-ID": str(original_home_id)})
+    assert client.delete(f"/homes/{original_home_id}").status_code == 409
 
 
 def test_standard_user_device_grants_guest_restrictions_and_admin_scope(rbac_context) -> None:

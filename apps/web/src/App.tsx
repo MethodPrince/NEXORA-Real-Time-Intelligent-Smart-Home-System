@@ -891,6 +891,22 @@ function App() {
     }
   }
 
+  async function deleteHome() {
+    if (!activeHome || homes.length <= 1) return;
+    if (!window.confirm(
+      `Permanently delete ${activeHome.name}? Its devices, automations, activity history, and home memberships will be removed. User accounts will remain.`,
+    )) return;
+    try {
+      await api.deleteHome(activeHome.id);
+      const remainingHomes = homes.filter((home) => home.id !== activeHome.id);
+      setHomes(remainingHomes);
+      selectHome(remainingHomes[0].id);
+      setToast(`${activeHome.name} deleted.`);
+    } catch (error) {
+      window.alert(error instanceof ApiError ? error.message : "Could not delete the home.");
+    }
+  }
+
   const pageTitle = navItems.find((item) => item.id === section)?.label ?? "Overview";
   const visibleNavItems = navItems.filter(({ id }) => {
     if (id === "users") return authUser?.role === "ADMIN";
@@ -1051,6 +1067,17 @@ function App() {
           {authUser?.role === "ADMIN" && (
             <button type="button" aria-label="Create home" onClick={() => void createHome()}>
               <Plus size={16} />
+            </button>
+          )}
+          {activeHome?.role === "ADMIN" && (
+            <button
+              type="button"
+              aria-label={`Delete ${activeHome.name}`}
+              title={homes.length > 1 ? `Delete ${activeHome.name}` : "At least one home must remain"}
+              disabled={homes.length <= 1}
+              onClick={() => void deleteHome()}
+            >
+              <Trash2 size={16} />
             </button>
           )}
         </div>
